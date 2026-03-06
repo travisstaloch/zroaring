@@ -15,8 +15,8 @@ pub fn Bitmap(min: comptime_int, max: comptime_int, W: type) type {
         pub const V = std.math.IntFittingRange(min, max); //            u16
         /// distance between min and max
         pub const max_offset = max - min; //                            65535
-        const VCount = std.math.IntFittingRange(0, max_cardinality); // u17
         const max_cardinality: comptime_int = max_offset + 1; //        65536
+        const VCount = std.math.IntFittingRange(0, max_cardinality); // u17
         const W_bits: usize = @typeInfo(W).int.bits; //                 64
         /// number of words without padding                             1024
         const words_len = std.math.divCeil(usize, max_cardinality, W_bits) catch unreachable;
@@ -36,6 +36,7 @@ pub fn Bitmap(min: comptime_int, max: comptime_int, W: type) type {
         const BlockMask = std.meta.Int(.unsigned, @sizeOf(Block) * 8);
 
         const Self = @This();
+
         pub fn init(words: WordsPtrAligned) Self {
             words.* = @splat(0);
             return .{ .words = words, .cardinality = 0 };
@@ -134,25 +135,11 @@ pub fn Bitmap(min: comptime_int, max: comptime_int, W: type) type {
         //     // return bs;
         // }
 
-        pub const unionWith = unionWithSimd;
+        pub const Op = enum { @"|", @"&", @"&~", @"^" };
 
-        fn unionWithSimple(self: *Self, other: Self) *Self {
-            self.cardinality = 0;
-            for (self.words, other.words) |*s, *o| {
-                s.* |= o.*;
-                self.cardinality += @intCast(@popCount(s.*));
-            }
-            return self;
-        }
-
-        fn unionWithSimd(self: *Self, other: Self) *Self {
-            return self.blockOp(other, .@"|");
-        }
-
-        // TODO more ops, use elsewhere
         // TODO benchmark, test this is faster than per-word ops
-        /// perform `op` with blocks instead of individual words.
-        fn blockOp(self: *Self, other: Self, comptime op: enum { @"|" }) *Self {
+        /// perform `op` on blocks at once instead of individual words.
+        fn blockOp(self: *Self, other: Self, comptime op: Op) *Self {
             assert(num_blocks > 0);
             self.cardinality = 0;
             for (0..num_blocks) |blocki| {
@@ -162,6 +149,9 @@ pub fn Bitmap(min: comptime_int, max: comptime_int, W: type) type {
                 const ov: Block = o.*;
                 sv = switch (op) {
                     .@"|" => sv | ov,
+                    .@"&" => sv & ov,
+                    .@"&~" => sv & ~ov,
+                    .@"^" => sv ^ ov,
                 };
                 s.* = sv;
                 self.cardinality += @intCast(@popCount(@as(BlockMask, @bitCast(sv))));
@@ -169,13 +159,30 @@ pub fn Bitmap(min: comptime_int, max: comptime_int, W: type) type {
             return self;
         }
 
-        pub fn intersectWith(self: *Self, other: Self) *Self {
+        pub const unionWith = unionWithSimd; // TODO fallback to simple
+        fn unionWithSimple(self: *Self, other: Self) *Self {
             self.cardinality = 0;
-            for (self.words, other.words) |*s, *o| { // TODO optimize?
+            for (self.words, other.words) |*s, *o| {
+                s.* |= o.*;
+                self.cardinality += @intCast(@popCount(s.*));
+            }
+            return self;
+        }
+        fn unionWithSimd(self: *Self, other: Self) *Self {
+            return self.blockOp(other, .@"|");
+        }
+
+        pub const intersectWith = intersectWithSimd; // TODO fallback to simple
+        fn intersectWithSimple(self: *Self, other: Self) *Self {
+            self.cardinality = 0;
+            for (self.words, other.words) |*s, *o| { // TODO bench and compare
                 s.* &= o.*;
                 self.cardinality += @intCast(@popCount(s.*));
             }
             return self;
+        }
+        fn intersectWithSimd(self: *Self, other: Self) *Self {
+            return self.blockOp(other, .@"&");
         }
 
         pub fn clear(self: *Self) *Self {
@@ -184,31 +191,30 @@ pub fn Bitmap(min: comptime_int, max: comptime_int, W: type) type {
             return self;
         }
 
-        pub fn differenceWith(self: *Self, other: Self) *Self {
+        pub const differenceWith = differenceWithSimd; // TODO fallback to simple
+        fn differenceWithSimple(self: *Self, other: Self) *Self {
             self.cardinality = 0;
-            for (self.words, other.words) |*s, *o| { // TODO optimize?
+            for (self.words, other.words) |*s, *o| { // TODO bench and compare
                 s.* &= ~o.*;
                 self.cardinality += @intCast(@popCount(s.*));
             }
             return self;
         }
+        fn differenceWithSimd(self: *Self, other: Self) *Self {
+            return self.blockOp(other, .@"&~");
+        }
 
-        pub fn xorWith(self: *Self, other: Self) *Self {
+        pub const xorWith = xorWithSimd; // TODO fallback to simple
+        fn xorWithSimple(self: *Self, other: Self) *Self {
             self.cardinality = 0;
-            for (self.words, other.words) |*s, *o| { // TODO optimize?
+            for (self.words, other.words) |*s, *o| { // TODO bench and compare
                 s.* ^= o.*;
                 self.cardinality += @intCast(@popCount(s.*));
             }
             return self;
         }
-
-        pub fn andNotWith(self: *Self, other: Self) *Self {
-            self.cardinality = 0;
-            for (self.words, other.words) |*s, *o| { // TODO optimize?
-                s.* &= ~o.*;
-                self.cardinality += @intCast(@popCount(s.*));
-            }
-            return self;
+        fn xorWithSimd(self: *Self, other: Self) *Self {
+            return self.blockOp(other, .@"^");
         }
 
         pub fn isEmpty(self: Self) bool {
@@ -385,17 +391,6 @@ pub fn Bitmap(min: comptime_int, max: comptime_int, W: type) type {
             try testing.expectEqual(c1.cardinality, 2);
         }
 
-        test andNotWith {
-            var words: [words_len_padded]W align(block_align) = undefined;
-            var words2: [words_len_padded]W align(block_align) = undefined;
-            var c1 = initValues(&words, &.{ min + 5, min + 10, min + 15 });
-            _ = c1.andNotWith(initValues(&words2, &.{ min + 10, min + 15, min + 20 }));
-            try testing.expect(c1.contains(min + 5));
-            try testing.expect(!c1.contains(min + 10));
-            try testing.expect(!c1.contains(min + 15));
-            try testing.expectEqual(c1.cardinality, 1);
-        }
-
         test isEmpty {
             var words: [words_len_padded]W align(block_align) = undefined;
             var container = init(&words);
@@ -514,7 +509,6 @@ fn testBitmap(min: comptime_int, max: comptime_int, W: type) !void {
 
 test bitmap {
     try testBitmap(0, 65535, u32);
-    // testing.log_level = .debug;
     try testBitmap(0, 65535, u64);
     try testBitmap(0, 65536, u64);
     try testBitmap(0, 65535 / 2, u64);
