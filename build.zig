@@ -49,4 +49,9 @@ pub fn build(b: *std.Build) void {
     });
     const docs_step = b.step("docs", "Generate documentation to zig-out/docs.");
     docs_step.dependOn(&docs.step);
+
+    const exe_check = b.addExecutable(.{ .name = "check", .root_module = mod });
+    const check = b.step("check", "Check if everything compiles");
+    check.dependOn(&exe_check.step);
+    check.dependOn(&mod_tests.step);
 }
