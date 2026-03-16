@@ -38,10 +38,7 @@ pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !Array {
 fn clear_containers(ra: *Array, allocator: mem.Allocator) void {
     for (0..ra.containers.len) |i| {
         const c = ra.containers.items(.container)[i];
-        c.free(allocator);
-        switch (c.typecode) {
-            inline else => |t| allocator.destroy(c.const_cast(t)),
-        }
+        c.deinit(allocator);
     }
 }
 

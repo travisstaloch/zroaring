@@ -130,12 +130,6 @@ pub const Container = packed struct(usize) {
         unreachable; // TODO
     }
 
-    pub fn free(c: Container, allocator: mem.Allocator) void {
-        switch (c.typecode) {
-            inline else => |t| c.mut_cast(t).free(allocator),
-        }
-    }
-
     ///
     /// Writes the underlying array to buf, outputs how many bytes were written.
     /// This is meant to be byte-by-byte compatible with the Java and Go versions of

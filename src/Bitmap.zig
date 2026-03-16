@@ -428,9 +428,8 @@ pub fn add_bulk_impl(r: *Bitmap, allocator: mem.Allocator, context: *BulkContext
         if (container2 != context.container) {
             // rare instance when we need to change the container type
             @branchHint(.unlikely);
-            context.container.free(allocator);
+            context.container.deinit(allocator);
             r.high_low_container.set_container_at_index(context.idx, container2);
-            // context.typecode = r.high_low_container.get_container_at_index(context.idx).typecode;
             context.container = container2;
         }
     }
@@ -456,7 +455,7 @@ fn containerptr_add(
         const c2 = try c.add(allocator, @truncate(val));
         index.* = i;
         if (c2 != c) {
-            c.free(allocator);
+            c.deinit(allocator);
             ra.set_container_at_index(i, c2);
             return c2;
         } else {
