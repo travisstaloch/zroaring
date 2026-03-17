@@ -1,13 +1,12 @@
 /// build identical bitmaps in zroaring and croaring from values.
 /// serialize both, compare bytes. cross deserialize, verify contents.
-fn validateRoundTrip(arena: mem.Allocator, name: []const u8, values: []const u32, run_optimize: bool) !void {
+fn validateRoundTrip(allocator: mem.Allocator, name: []const u8, values: []const u32, run_optimize: bool) !void {
     _ = name;
-
     // build zroaring bitmap
     var zr: Bitmap = .{};
-    defer zr.deinit(arena);
-    for (values) |v| try zr.add(arena, v);
-    if (run_optimize) _ = try zr.run_optimize(arena);
+    defer zr.deinit(allocator);
+    for (values) |v| try zr.add(allocator, v);
+    if (run_optimize) _ = try zr.run_optimize(allocator);
     // std.debug.print("zr {any}\n", .{zr});
     // std.debug.print("{s} zr {f}\n", .{ name, zr });
     try testing.expectEqual(values.len, zr.get_cardinality());
@@ -27,11 +26,11 @@ fn validateRoundTrip(arena: mem.Allocator, name: []const u8, values: []const u32
     try testing.expectEqual(cr_size, zr_size);
 
     // serialize both
-    const zr_buf = try arena.alloc(u8, zr_size);
-    defer arena.free(zr_buf);
+    const zr_buf = try allocator.alloc(u8, zr_size);
+    defer allocator.free(zr_buf);
     var zr_w = std.Io.Writer.fixed(zr_buf);
-    const cr_buf = try arena.alloc(u8, cr_size);
-    defer arena.free(cr_buf);
+    const cr_buf = try allocator.alloc(u8, cr_size);
+    defer allocator.free(cr_buf);
     try testing.expectEqual(
         c.roaring_bitmap_portable_serialize(cr, @ptrCast(cr_buf.ptr)),
         zr.portable_serialize(&zr_w),
@@ -47,8 +46,8 @@ fn validateRoundTrip(arena: mem.Allocator, name: []const u8, values: []const u32
 
     // deserialize croaring bytes with zroaring. check equal.
     var cr_r = std.Io.Reader.fixed(cr_buf);
-    var zr2 = try Bitmap.portable_deserialize(arena, &cr_r);
-    defer zr2.deinit(arena);
+    var zr2 = try Bitmap.portable_deserialize(allocator, &cr_r);
+    defer zr2.deinit(allocator);
     // std.debug.print("zr2 {f}\n", .{zr2});
     // std.debug.print("zr2 {} zr {any}\n", .{ zr, zr2, cr_buf.len, zr });
     // std.debug.print("zr2 card {} zr card {}\n", .{ zr2.get_cardinality(), zr.get_cardinality() });
@@ -65,7 +64,6 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, name: []const u8, start: u32
     defer zr.deinit(allocator);
     try zr.add_range(allocator, start, end);
     if (run_optimize) _ = try zr.run_optimize(allocator);
-    if (true) return;
     const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
     defer c.roaring_bitmap_free(cr);
     c.roaring_bitmap_add_range(cr, start, @as(u64, end) + 1);
@@ -73,15 +71,15 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, name: []const u8, start: u32
 
     // serialize both
     const cr_size = c.roaring_bitmap_portable_size_in_bytes(cr);
-    const buf = try allocator.alloc(u8, cr_size);
-    defer allocator.free(buf);
+    const cr_buf = try allocator.alloc(u8, cr_size);
+    defer allocator.free(cr_buf);
+
     const zr_size = zr.portable_size_in_bytes();
     const zr_buf = try allocator.alloc(u8, zr_size);
     defer allocator.free(zr_buf);
     var zr_w: std.Io.Writer = .fixed(zr_buf);
     _ = try zr.portable_serialize(&zr_w);
-    const cr_buf = try allocator.alloc(u8, cr_size);
-    defer allocator.free(cr_buf);
+
     _ = c.roaring_bitmap_portable_serialize(cr, @ptrCast(cr_buf.ptr));
     try testing.expectEqualSlices(u8, cr_buf, zr_buf);
 
@@ -167,12 +165,10 @@ pub fn validate() !void {
     for (0..5000) |i| bitset5000[i] = @intCast(i);
     try validateRoundTrip(allocator, "bitset_5000", &bitset5000, false);
 
-    if (true) return; // TODO run_optimize
     // Full chunk as run (65536 values) - CRoaring auto-optimizes to run, so we must too
     // (This tests run serialization, not bitset - renamed to avoid confusion)
-    try validateRangeRoundTrip(allocator, "run_full_chunk", 0, 65535, false);
-    // FIXME Container.deinit why so undefined?
     try validateRangeRoundTrip(allocator, "run_full_chunk", 0, 65535, true);
+    if (true) return; // TODO run_optimize
 
     // Multiple container tests:
     // Values at chunk boundaries

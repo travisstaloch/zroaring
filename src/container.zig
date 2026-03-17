@@ -74,6 +74,7 @@ pub const Container = packed struct(usize) {
     /// typecode
     ///
     pub fn size_in_bytes(c: Container) usize {
+        // std.debug.print("c {x}-{x}\n", .{ @intFromEnum(c.typecode), c.address });
         const ret = switch (c.typecode) {
             inline else => |t| c.unwrap_shared().const_cast(t).size_in_bytes(),
         };

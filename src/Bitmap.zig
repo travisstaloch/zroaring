@@ -483,6 +483,7 @@ pub fn add_checked(r: *Bitmap, x: u32) bool {
 /// Add all values in range [min, max]
 ///
 pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
+    // std.debug.print("add_range_closed({},{})", .{ min, max });
     if (min > max) return;
     const ra = &r.high_low_container;
     const min_key = min >> 16;
@@ -495,13 +496,16 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
         misc.count_less(ra.containers.items(.key)[0 .. ra.containers.len - suffix_length], @truncate(min_key));
     const common_length = ra.containers.len - prefix_length - suffix_length;
 
+    // std.debug.print("num_required_containers {}, common_length {}, {f}\n", .{ num_required_containers, common_length, ra });
     if (num_required_containers > common_length) {
-        try ra.shift_tail(allocator, suffix_length, @intCast(num_required_containers -% common_length));
+        try ra.shift_tail(allocator, suffix_length, @intCast(num_required_containers - common_length));
     }
+    if (common_length == 0) return;
 
-    var src = prefix_length + common_length -% 1;
+    var src = prefix_length + common_length - 1;
     var dst: u32 = @intCast(ra.containers.len - suffix_length - 1);
     var key = max_key;
+    // std.debug.print("key {} min_key {} max_key {}\n", .{ key, min_key, max_key });
     while (key != min_key) : (key -= 1) { // beware of min_key==0
         const container_min: u16 = if (min_key == key) @truncate(min) else 0;
         const container_max: u16 = if (max_key == key) @truncate(max) else 0xffff;
@@ -518,6 +522,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
         } else {
             new_container = try .from_range(allocator, container_min, container_max + 1, 1);
         }
+        // std.debug.print("new_container {f}", .{new_container});
         assert(!new_container.is_null());
         ra.replace_key_and_container_at_index(dst, @truncate(key), new_container);
         dst -= 1;
@@ -528,11 +533,12 @@ const u32_max = std.math.maxInt(u32);
 ///
 /// Add all values in range [min, max)
 ///
-pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
+pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u64, max: u64) !void {
+    // std.debug.print("add_range({},{})\n", .{ min, max });
     if (max <= min or min > u32_max + 1) {
         return;
     }
-    try r.add_range_closed(allocator, min, (max - 1));
+    try r.add_range_closed(allocator, @intCast(min), @intCast(max - 1));
 }
 
 ///

@@ -67,16 +67,14 @@ pub fn unshare_container_at_index(ra: *Array, i: u16) void {
     ra.containers.items(.container)[i] = ra.containers.items(.container)[i].get_writable_copy_if_shared();
 }
 pub fn extend_array(ra: *Array, allocator: mem.Allocator, k: i32) !void {
-    // try ra.containers.ensureTotalCapacity(allocator, k);
-
     const desired_size = misc.cast(i32, ra.containers.len) + k;
     assert(desired_size <= C.MAX_CONTAINERS);
     if (desired_size > ra.containers.capacity) {
-        const new_capacity = @min(C.MAX_CONTAINERS, if (ra.containers.len < 1024)
+        const new_capacity: u32 = @intCast(@min(C.MAX_CONTAINERS, if (ra.containers.len < 1024)
             2 * desired_size
         else
-            @divFloor(5 * desired_size, 4));
-        try ra.containers.ensureTotalCapacity(allocator, @intCast(new_capacity));
+            @divFloor(5 * desired_size, 4)));
+        try ra.containers.ensureTotalCapacity(allocator, new_capacity);
     }
 }
 
@@ -271,6 +269,7 @@ pub fn has_run_container(ra: Array) bool {
             break true;
     } else false;
 }
+
 pub fn portable_header_size(ra: Array) usize {
     if (ra.has_run_container()) {
         if (ra.containers.len < C.NO_OFFSET_THRESHOLD) { // for small bitmaps, we omit the offsets
@@ -311,8 +310,10 @@ pub fn replace_key_and_container_at_index(
 /// Caller is responsible for that.
 ///
 pub fn shift_tail(ra: *Array, allocator: mem.Allocator, count: u32, distance: i32) !void {
+    // std.debug.print("ra.shift_tail({},{}) containers.len {} containers.capacity {}\n", .{ count, distance, ra.containers.len, ra.containers.capacity });
     if (distance > 0) try ra.extend_array(allocator, distance);
-
+    // std.debug.print("  containers.len {} containers.capacity {}\n", .{ ra.containers.len, ra.containers.capacity });
+    if (count == 0) return;
     const srcpos = misc.cast(i32, ra.containers.len - count);
     const dstpos = srcpos + distance;
     ra.containers.len += @intCast(distance);

@@ -7,7 +7,7 @@ This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) a
 [Documentation](https://archaistvolts.github.io/zroaring/) is hosted on github.
 
 # Contributing
-Contributions are welcome.  Please open an pull request or issue on codeberg if you run into a TODO or FIXME while using this project.  There is a lot of work to do here.
+Contributions are welcome.  Please open an pull request or issue on codeberg if you run into a TODO or FIXME while using this project.  There is a lot of work to do here.  No ai slop please.
 
 # References
 * https://github.com/RoaringBitmap/RoaringFormatSpec/
