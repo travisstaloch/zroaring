@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests_mod.step);
 
-    const lib = b.addLibrary(.{ .root_module = mod, .name = "roaring_regex" });
+    const lib = b.addLibrary(.{ .root_module = mod, .name = "zroaring" });
     const docs = b.addInstallDirectory(.{
         .source_dir = lib.getEmittedDocs(),
         .install_dir = .{ .prefix = {} },

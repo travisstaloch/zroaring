@@ -1,7 +1,7 @@
 .{
-    .name = .roaring_regex,
+    .name = .zroaring,
     .version = "0.0.0",
-    .fingerprint = 0xeeb222810b73aa6f, // Changing this has security and trust implications.
+    .fingerprint = 0xd02d5a2babbace84, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
     .dependencies = .{},
     .paths = .{

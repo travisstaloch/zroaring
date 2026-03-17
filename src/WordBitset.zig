@@ -154,22 +154,21 @@ pub fn WordBitset(options: struct {
         ///
         /// Find the cardinality of the bitset in [begin,begin+lenminusone]
         ///
-        pub fn bitset_lenrange_cardinality(words: WordsPtrAligned, start: u32, lenminusone: u32) u32 {
+        pub fn lenrange_cardinality(words: WordsPtrAligned, start: u32, lenminusone: u32) u32 {
             const firstword = start / 64;
             const endword = (start + lenminusone) / 64;
             if (firstword == endword) {
                 return @popCount(words[firstword] &
-                    ((~word_zero) >> ((63 - lenminusone) % 64)) << (start % 64));
+                    ((~word_zero) >> @intCast((63 - lenminusone) % 64)) << @intCast(start % 64));
             }
             var answer =
-                @popCount(words[firstword] & ((~word_zero) << (start % 64)));
-            // for (uint32_t i = firstword + 1; i < endword; i++) {
-            for (firstword..endword) |i|
+                @popCount(words[firstword] & ((~word_zero) << @intCast(start % 64)));
+            for (firstword + 1..endword) |i| {
                 answer += @popCount(words[i]);
-
+            }
             answer += @popCount(words[endword] &
                 (~word_zero) >>
-                    (((~start + 1) - lenminusone - 1) % 64));
+                    @intCast(((~start + 1) - lenminusone - 1) % 64));
             return answer;
         }
 
@@ -190,27 +189,6 @@ pub fn WordBitset(options: struct {
                 words[i..][0..2].* = @splat(~word_zero);
             words[endword] =
                 temp | (~word_zero) >> @intCast(((~start + 1) - lenminusone - 1) % 64);
-        }
-
-        ///
-        /// Find the cardinality of the bitset in [begin,begin+lenminusone]
-        ///
-        pub fn lenrange_cardinality(words: WordsPtrAligned, start: u32, lenminusone: u32) u32 {
-            const firstword = start / 64;
-            const endword = (start + lenminusone) / 64;
-            if (firstword == endword) {
-                return @popCount(words[firstword] &
-                    ((~word_zero) >> @intCast((@as(Word, 63) - lenminusone) % 64)) << @intCast(start % 64));
-            }
-            var answer =
-                @popCount(words[firstword] & ((~word_zero) << @intCast(start % 64)));
-            for (firstword + 1..endword) |i| {
-                answer += @popCount(words[i]);
-            }
-            answer += @popCount(words[endword] &
-                (~word_zero) >>
-                    @intCast(((~start + 1) - lenminusone - 1) % 64));
-            return answer;
         }
 
         // fn calcCount(self: Self) VCount {
