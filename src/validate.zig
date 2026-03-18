@@ -98,7 +98,8 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, name: []const u8, start: u32
     try testing.expectEqual(c.roaring_bitmap_get_cardinality(cr2), zr.get_cardinality());
 
     // deserialize croaring bytes with zr
-    var zr2 = Bitmap.portable_deserialize_safe(cr_buf);
+    var cr_r: std.Io.Reader = .fixed(cr_buf);
+    var zr2 = try Bitmap.portable_deserialize_safe(&cr_r, allocator);
     defer zr2.deinit(allocator);
     try testing.expect(zr.equals(zr2));
 
@@ -176,7 +177,7 @@ pub fn validate() !void {
     // Full chunk as run (65536 values) - CRoaring auto-optimizes to run, so we must too
     // (This tests run serialization, not bitset - renamed to avoid confusion)
     try validateRangeRoundTrip(allocator, "run_full_chunk", 0, 65535, true);
-    if (true) return; // TODO run_optimize
+    if (true) return; // TODO
 
     // Multiple container tests:
     // Values at chunk boundaries

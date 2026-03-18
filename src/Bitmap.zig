@@ -929,9 +929,14 @@ pub fn portable_deserialize(allocator: mem.Allocator, r: *Io.Reader) !Bitmap {
 ///
 /// The returned pointer may be NULL in case of errors.
 ///
-pub fn portable_deserialize_safe(buf: []const u8) Bitmap {
-    _ = buf;
-    unreachable; // TODO
+pub fn portable_deserialize_safe(r: *Io.Reader, allocator: mem.Allocator) !Bitmap {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var ret: Bitmap = .{
+        .high_low_container = try .portable_deserialize(allocator, r, arena.allocator()),
+    };
+    ret.set_copy_on_write(false);
+    return ret;
 }
 
 ///

@@ -182,6 +182,9 @@ pub const Container = packed struct(usize) {
                 .equals(c2u.const_cast(.bitset)),
             Typecode.pair(.array, .array) => c1u.const_cast(.array)
                 .equals(c2u.const_cast(.array)),
+            Typecode.pair(.run, .run) => c1u.const_cast(.run)
+                .equals(c2u.const_cast(.run)),
+
             else => {
                 std.debug.print("Conatiner.equals(). TODO pair ({t}, {t})\n", .{ c1u.typecode, c2u.typecode });
                 unreachable;
@@ -672,11 +675,20 @@ pub const RunContainer = struct {
         answer.cardinality = card;
         return try .create_from_value(allocator, answer);
     }
+
     /// assumes that container has adequate space.  Run from [s,e] (inclusive)
     pub fn add_run(c: *RunContainer, s: u32, e: u32) void {
         c.runs[c.n_runs].value = @intCast(s);
         c.runs[c.n_runs].length = @intCast(e - s);
         c.n_runs += 1;
+    }
+
+    ///
+    /// Return true if the two containers have the same content.
+    ///
+    pub fn equals(container1: RunContainer, container2: *const RunContainer) bool {
+        if (container1.n_runs != container2.n_runs) return false;
+        return std.mem.eql([2]u8, @ptrCast(container1.slice()), @ptrCast(container2.slice()));
     }
 
     pub fn format(c: RunContainer, w: *Io.Writer) !void {
