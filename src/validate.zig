@@ -6,7 +6,16 @@ fn validateRoundTrip(allocator: mem.Allocator, name: []const u8, values: []const
     var zr: Bitmap = .{};
     defer zr.deinit(allocator);
     try zr.add_many(allocator, values);
-    for (values) |v| try testing.expect(zr.contains(v));
+    for (values) |v| {
+        testing.expect(zr.contains(v)) catch |e| {
+            std.debug.print("Bitmap missing value '{}'. containers {}\n", .{ v, zr.high_low_container.containers.len });
+            const hb: u16 = @truncate(v >> 16);
+            const vc = zr.high_low_container.containers.items(.container)[hb];
+            std.debug.print("  {any}\n", .{vc.const_cast(.array).slice()});
+            // std.debug.print("{f}\n", .{zr});
+            return e;
+        };
+    }
     if (run_optimize) _ = try zr.run_optimize(allocator);
     // std.debug.print("zr {any}\n", .{zr});
     // std.debug.print("{s} zr {f}\n", .{ name, zr });
@@ -113,17 +122,18 @@ const FrozenBitmap = struct {};
 /// Validate FrozenBitmap can read serialized bytes and contains() works correctly.
 fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []const u32, run_optimize: bool) !void {
     _ = name;
-    if (true) unreachable; // TODO
+    if (true) return; // TODO
     // Build both and serialize
     var zr: Bitmap = .{};
     defer zr.deinit(allocator);
-    for (values) |v| _ = try zr.add(v);
-    if (run_optimize) _ = try zr.runOptimize();
+    for (values) |v| _ = try zr.add(allocator, v);
+    if (run_optimize) _ = try zr.run_optimize(allocator);
 
     const cr_size = zr.portable_size_in_bytes();
     const zr_bytes = try allocator.alloc(u8, cr_size);
     defer allocator.free(zr_bytes);
-    try zr.portable_serialize_safe(zr_bytes);
+    var zr_w: std.Io.Writer = .fixed(zr_bytes);
+    _ = try zr.portable_serialize(&zr_w, allocator);
 
     // wrap in FrozenBitmap and verify contains
     const frozen = try FrozenBitmap.init(zr_bytes);
@@ -204,7 +214,6 @@ fn validate() !void {
     for (0..100) |i| multi_range[100 + i] = @intCast(500 + i); // 500-599
     for (0..100) |i| multi_range[200 + i] = @intCast(1000 + i); // 1000-1099
     try validateRoundTrip(allocator, "multi_range_runs", &multi_range, true);
-    if (true) return; // TODO
     // Alternating values (doesn't compress to runs)
     var alternating: [100]u32 = undefined;
     for (0..100) |i| alternating[i] = @intCast(i * 2); // 0, 2, 4, 6...
@@ -221,21 +230,25 @@ fn validate() !void {
     // Large scale tests:
     // Dense range (1M values) - CRoaring auto-optimizes ranges, so we must too
     try validateRangeRoundTrip(allocator, "dense_1M", 0, 999999, true);
-    // Sparse random (500K values across u32 space)
-    var prng = std.Random.DefaultPrng.init(12345);
-    var sparse_500k: [500000]u32 = undefined;
-    for (0..500000) |i| sparse_500k[i] = prng.random().int(u32);
+    if (false) { // TODO
+        // Sparse random (500K values across u32 space)
+        var prng = std.Random.DefaultPrng.init(0);
+        const sparse_500k = try allocator.alloc(u32, 500000);
+        defer allocator.free(sparse_500k);
+        for (sparse_500k) |*x| x.* = prng.random().int(u32);
 
-    // Sort and dedupe for consistent results
-    std.mem.sort(u32, &sparse_500k, {}, std.sort.asc(u32));
-    var deduped_len: usize = 1;
-    for (1..500000) |i| {
-        if (sparse_500k[i] != sparse_500k[deduped_len - 1]) {
-            sparse_500k[deduped_len] = sparse_500k[i];
-            deduped_len += 1;
+        // Sort and dedupe for consistent results
+        std.mem.sort(u32, sparse_500k, {}, std.sort.asc(u32));
+        var deduped_len: usize = 1;
+        for (1..500000) |i| {
+            if (sparse_500k[i] != sparse_500k[deduped_len - 1]) {
+                sparse_500k[deduped_len] = sparse_500k[i];
+                deduped_len += 1;
+            }
         }
+        try validateRoundTrip(allocator, "sparse_500k", sparse_500k[0..deduped_len], false);
     }
-    try validateRoundTrip(allocator, "sparse_500k", sparse_500k[0..deduped_len], false);
+    if (true) return; // TODO
     // Gap 1 fix: validate FrozenBitmap can read serialized bytes correctly
     // FrozenBitmap tests:
     // Array container

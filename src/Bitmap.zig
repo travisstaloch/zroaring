@@ -427,9 +427,9 @@ fn add_bulk_impl(
             .key = key,
         };
     } else {
-        // no need to seek the container, it is at hand
-        // because we already have the container at hand, we can do the
-        // insertion directly, bypassing the roaring_bitmap_add call
+        // no need to seek the container, it is at hand because we already have
+        // the container at hand, we can do the insertion directly, bypassing
+        // the roaring_bitmap_add call
         const container2 = try context.container.add(allocator, @truncate(val));
         if (container2 != context.container) {
             // rare instance when we need to change the container type
@@ -474,7 +474,7 @@ fn containerptr_add(
         try new_ac.add(allocator, @truncate(val));
         // we can assume that it stays an array container
         const c = try Container.create_from_value(allocator, new_ac);
-        errdefer allocator.destroy(c.mut_cast(.array)); // avoid double deinit: dont't use c.deinit
+        errdefer allocator.destroy(c.mut_cast(.array)); // avoid errdefer double deinit by not using c.deinit
         try ra.insert_new_key_value_at(allocator, @intCast(-i - 1), key, c);
         index.* = @intCast(-i - 1);
         return c;

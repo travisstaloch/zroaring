@@ -33,23 +33,23 @@ pub fn WordBitset(options: struct {
         pub const SIZE_IN_WORDS = std.math.divCeil(usize, MAX_CARDINALITY, WORD_BITSIZE) catch unreachable;
         pub const SIZE_IN_BYTES = SIZE_IN_WORDS * @sizeOf(Word); //             8192
         /// number of words with padding to block len                           1024
-        const SIZE_IN_WORDS_PADDED: usize = mem.alignForward(usize, SIZE_IN_WORDS, block_len);
-        const WordsPtrAligned = [*]align(block_align) Word; //                  [*]align(32)u64
-        const WordsSliceAligned = []align(block_align) Word;
+        const SIZE_IN_WORDS_PADDED: usize = mem.alignForward(usize, SIZE_IN_WORDS, BLOCK_LEN);
+        const WordsPtrAligned = [*]align(BLOCK_ALIGN) Word; //                  [*]align(32)u64
+        const WordsSliceAligned = []align(BLOCK_ALIGN) Word;
         const WordIndex = std.math.Log2Int(Word); //                            u6
 
         // blocks
         /// suggested vector length for `Word` or else largest suggested from `block_types`.
-        const block_len = std.simd.suggestVectorLength(Word) orelse
+        const BLOCK_LEN = std.simd.suggestVectorLength(Word) orelse
             for (word_types) |T| {
                 if (std.simd.suggestVectorLength(T)) |len|
                     break len;
             } else null; // unsupported. TODO. workaround with a smaller `Word` type?
-        const Block = @Vector(@min(SIZE_IN_WORDS_PADDED, block_len), Word);
-        const BlockArray = [@min(SIZE_IN_WORDS_PADDED, block_len)]Word;
-        const block_align = @alignOf(Block);
-        const blocks_count = @divExact(SIZE_IN_WORDS_PADDED, block_len);
-        const words_per_block = @divExact(SIZE_IN_WORDS_PADDED, blocks_count);
+        const Block = @Vector(@min(SIZE_IN_WORDS_PADDED, BLOCK_LEN), Word);
+        const BlockArray = [@min(SIZE_IN_WORDS_PADDED, BLOCK_LEN)]Word;
+        const BLOCK_ALIGN = @alignOf(Block);
+        const BLOCKS_COUNT = @divExact(SIZE_IN_WORDS_PADDED, BLOCK_LEN);
+        const WORDS_PER_BLOCK = @divExact(SIZE_IN_WORDS_PADDED, BLOCKS_COUNT);
         const BlockMask = std.meta.Int(.unsigned, @sizeOf(Block) * 8);
 
         const Self = @This();
@@ -70,12 +70,12 @@ pub fn WordBitset(options: struct {
         }
 
         pub fn create(allocator: mem.Allocator) !Self {
-            const words_slice = try allocator.alignedAlloc(Word, .fromByteUnits(block_align), SIZE_IN_WORDS_PADDED);
+            const words_slice = try allocator.alignedAlloc(Word, .fromByteUnits(BLOCK_ALIGN), SIZE_IN_WORDS_PADDED);
             return init(words_slice[0..SIZE_IN_WORDS_PADDED]);
         }
 
         pub fn createBatch(allocator: mem.Allocator, values: []const Value) !Self {
-            const words_slice = try allocator.alignedAlloc(Word, .fromByteUnits(block_align), SIZE_IN_WORDS_PADDED);
+            const words_slice = try allocator.alignedAlloc(Word, .fromByteUnits(BLOCK_ALIGN), SIZE_IN_WORDS_PADDED);
             return initBatch(words_slice[0..SIZE_IN_WORDS_PADDED], values);
         }
 
@@ -202,11 +202,11 @@ pub fn WordBitset(options: struct {
         // TODO benchmark, test this is faster than per-word ops
         /// perform `op` on blocks at once instead of individual words.
         fn blockOp(dest: *Self, src: Self, comptime op: Op) *Self {
-            assert(blocks_count > 0);
+            assert(BLOCKS_COUNT > 0);
             dest.cardinality = 0;
-            for (0..blocks_count) |blocki| {
-                const d: *BlockArray = @ptrCast(dest.words[blocki * words_per_block ..][0..words_per_block]);
-                const s: *BlockArray = @ptrCast(src.words[blocki * words_per_block ..][0..words_per_block]);
+            for (0..BLOCKS_COUNT) |blocki| {
+                const d: *BlockArray = @ptrCast(dest.words[blocki * WORDS_PER_BLOCK ..][0..WORDS_PER_BLOCK]);
+                const s: *BlockArray = @ptrCast(src.words[blocki * WORDS_PER_BLOCK ..][0..WORDS_PER_BLOCK]);
                 var dv: Block = d.*;
                 const sv: Block = s.*;
                 dv = switch (op) {
@@ -320,7 +320,7 @@ pub fn WordBitset(options: struct {
 
         /// this may be a large struct and likely shouldn't be copied
         pub const Builder = struct {
-            words: [SIZE_IN_WORDS_PADDED]Word align(block_align),
+            words: [SIZE_IN_WORDS_PADDED]Word align(BLOCK_ALIGN),
             bitset: Self,
 
             pub fn init(b: *Builder) Self {
@@ -365,7 +365,7 @@ pub fn WordBitset(options: struct {
             if (build_options.trace) {
                 try w.print(
                     " Bitmap({: <4}{: <6}{: <5}) value types: {: <3} {: <3} words (needed: {: <5} padded: {: <5} size_in_bytes: {: <5}) block: {s: <6} mask: {} blocks {}",
-                    .{ MIN, MAX, Word, Value, ValueCardinality, SIZE_IN_WORDS, SIZE_IN_WORDS_PADDED, self.size_in_bytes(), @typeName(Word) ++ std.fmt.comptimePrint("x{}", .{block_len}), BlockMask, blocks_count },
+                    .{ MIN, MAX, Word, Value, ValueCardinality, SIZE_IN_WORDS, SIZE_IN_WORDS_PADDED, self.size_in_bytes(), @typeName(Word) ++ std.fmt.comptimePrint("x{}", .{BLOCK_LEN}), BlockMask, BLOCKS_COUNT },
                 );
             }
         }

@@ -169,7 +169,7 @@ pub const Container = packed struct(usize) {
         const c1 = c.unwrap_shared();
         const ret = switch (c1.typecode) {
             inline else => |typecode| c1.const_cast(typecode).contains(val),
-            .shared => unreachable, // TODO
+            .shared => unreachable,
         };
         // std.debug.print("Container.contains({}) {t} {}\n", .{ val, c1.typecode, ret });
         return ret;
@@ -492,7 +492,7 @@ pub const RunContainer = struct {
     ///
     pub fn create_range(allocator: mem.Allocator, start: u32, stop: u32) !RunContainer {
         var rc = try create_with_capacity(allocator, 1);
-        _ = rc.append_first(.{ .value = @intCast(start), .length = @intCast(stop - start - 1) });
+        _ = rc.append_first(.{ .value = @truncate(start), .length = @truncate(stop - start - 1) });
         return rc;
     }
     pub fn deinit(r: RunContainer, allocator: mem.Allocator) void {
