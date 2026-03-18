@@ -31,9 +31,11 @@ fn validateRoundTrip(allocator: mem.Allocator, name: []const u8, values: []const
     var zr_w = std.Io.Writer.fixed(zr_buf);
     const cr_buf = try allocator.alloc(u8, cr_size);
     defer allocator.free(cr_buf);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
     try testing.expectEqual(
         c.roaring_bitmap_portable_serialize(cr, @ptrCast(cr_buf.ptr)),
-        zr.portable_serialize(&zr_w),
+        zr.portable_serialize(&zr_w, arena.allocator()),
     );
     try testing.expectEqualSlices(u8, cr_buf, zr_buf);
 
@@ -62,12 +64,14 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, name: []const u8, start: u32
     // build both
     var zr: Bitmap = .{};
     defer zr.deinit(allocator);
-    try zr.add_range(allocator, start, end);
-    if (run_optimize) _ = try zr.run_optimize(allocator);
+    try zr.add_range(allocator, start, end + 1);
+    // std.debug.print("after add_range({},{}) zr {f}\n", .{ start, end + 1, zr });
+    const zr_did_optimize = run_optimize and try zr.run_optimize(allocator);
+
     const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
     defer c.roaring_bitmap_free(cr);
     c.roaring_bitmap_add_range(cr, start, @as(u64, end) + 1);
-    if (run_optimize) _ = c.roaring_bitmap_run_optimize(cr);
+    const cr_did_optimize = run_optimize and c.roaring_bitmap_run_optimize(cr);
 
     // serialize both
     const cr_size = c.roaring_bitmap_portable_size_in_bytes(cr);
@@ -78,9 +82,13 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, name: []const u8, start: u32
     const zr_buf = try allocator.alloc(u8, zr_size);
     defer allocator.free(zr_buf);
     var zr_w: std.Io.Writer = .fixed(zr_buf);
-    _ = try zr.portable_serialize(&zr_w);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    _ = try zr.portable_serialize(&zr_w, arena.allocator());
 
     _ = c.roaring_bitmap_portable_serialize(cr, @ptrCast(cr_buf.ptr));
+    try testing.expectEqual(cr_did_optimize, zr_did_optimize);
+    try testing.expectEqual(cr_size, zr_size);
     try testing.expectEqualSlices(u8, cr_buf, zr_buf);
 
     // deserialize zr bytes with croaring

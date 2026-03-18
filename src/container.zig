@@ -320,6 +320,7 @@ pub const Container = packed struct(usize) {
     /// initially always use a run container, even if an array might be
     /// marginally smaller
     pub fn range_of_ones(allocator: mem.Allocator, range_start: u32, range_end: u32) !Container {
+        // std.debug.print("Container.range_of_ones {}-{}\n", .{ range_start, range_end });
         assert(range_end >= range_start);
         const cardinality = range_end - range_start + 1;
         return try if (cardinality <= 2)
@@ -338,7 +339,7 @@ pub const Container = packed struct(usize) {
         const size = (max - min + step - 1) / step;
         if (size <= C.DEFAULT_MAX_SIZE) { // array container
 
-            const array = try ArrayContainer.create_with_capacity(allocator, size);
+            var array = try ArrayContainer.create_with_capacity(allocator, size);
             try array.add_from_range(allocator, min, max, step);
             assert(array.cardinality == size);
             return try create_from_value(allocator, array);
@@ -350,6 +351,107 @@ pub const Container = packed struct(usize) {
         }
     }
 
+    /// once converted, the original container is disposed here, rather than
+    /// in roaring_array
+    ///
+    // TODO: split into run-  array-  and bitset-  subfunctions for sanity;
+    // a few function calls won't really matter.
+    pub fn convert_run_optimize(c: Container, allocator: mem.Allocator) !Container {
+        if (c.typecode == .run) {
+            const newc = try c.mut_cast(.run).convert_run_to_efficient_container(allocator);
+            if (newc != c) c.deinit(allocator);
+            return newc;
+        } else if (c.typecode == .array) {
+            // it might need to be converted to a run container.
+            const c_qua_array = c.const_cast(.array);
+            const n_runs = c_qua_array.number_of_runs();
+            const size_as_run_container = RunContainer.serialized_size_in_bytes(n_runs);
+            const card = c_qua_array.cardinality;
+            const size_as_array_container = ArrayContainer.serialized_size_in_bytes(card);
+
+            if (size_as_run_container >= size_as_array_container) {
+                return c;
+            }
+            // else convert array to run container
+            var answer = try RunContainer.create_with_capacity(allocator, n_runs);
+            var prev: i32 = -2;
+            var run_start: i32 = -1;
+
+            assert(card > 0);
+            var i: u32 = 0;
+            while (i < card) : (i += 1) {
+                const cur_val = c_qua_array.sorted_values[i];
+                if (cur_val != prev + 1) {
+                    // new run starts; flush old one, if any
+                    if (run_start != -1) answer.add_run(@intCast(run_start), @intCast(prev));
+                    run_start = cur_val;
+                }
+                prev = c_qua_array.sorted_values[i];
+            }
+            assert(run_start >= 0);
+            // now prev is the last seen value
+            answer.add_run(@intCast(run_start), @intCast(prev));
+            c_qua_array.deinit(allocator);
+            return try .create_from_value(allocator, answer);
+        } else if (c.typecode == .bitset) { // run conversions on bitset
+            unreachable; // TODO
+            // // does bitset need conversion to run?
+            // bitset_container_t *c_qua_bitset = CAST_bitset(c);
+            // int32_t n_runs = bitset_container_number_of_runs(c_qua_bitset);
+            // int32_t size_as_run_container =
+            //     run_container_serialized_size_in_bytes(n_runs);
+            // int32_t size_as_bitset_container =
+            //     bitset_container_serialized_size_in_bytes();
+
+            // if (size_as_bitset_container <= size_as_run_container) {
+            //     // no conversion needed.
+            //     *typecode_after = .bitset;
+            //     return c;
+            // }
+            // // bitset to runcontainer (ported from Java  RunContainer(
+            // // BitmapContainer bc, int nbrRuns))
+            // assert(n_runs > 0);  // no empty bitmaps
+            // run_container_t *answer = run_container_create_given_capacity(n_runs);
+
+            // int long_ctr = 0;
+            // uint64_t cur_word = c_qua_bitset.words[0];
+            // while (true) {
+            //     while (cur_word == UINT64_C(0) &&
+            //            long_ctr < BITSET_CONTAINER_SIZE_IN_WORDS - 1)
+            //         cur_word = c_qua_bitset.words[++long_ctr];
+
+            //     if (cur_word == UINT64_C(0)) {
+            //         bitset_container_free(c_qua_bitset);
+            //         *typecode_after = .run;
+            //         return answer;
+            //     }
+
+            //     int local_run_start = roaring_trailing_zeroes(cur_word);
+            //     int run_start = local_run_start + 64 * long_ctr;
+            //     uint64_t cur_word_with_1s = cur_word | (cur_word - 1);
+
+            //     int run_end = 0;
+            //     while (cur_word_with_1s == UINT64_C(0xFFFFFFFFFFFFFFFF) &&
+            //            long_ctr < BITSET_CONTAINER_SIZE_IN_WORDS - 1)
+            //         cur_word_with_1s = c_qua_bitset.words[++long_ctr];
+
+            //     if (cur_word_with_1s == UINT64_C(0xFFFFFFFFFFFFFFFF)) {
+            //         run_end = 64 + long_ctr * 64;  // exclusive, I guess
+            //         add_run(answer, run_start, run_end - 1);
+            //         bitset_container_free(c_qua_bitset);
+            //         *typecode_after = .run;
+            //         return answer;
+            //     }
+            //     int local_run_end = roaring_trailing_zeroes(~cur_word_with_1s);
+            //     run_end = local_run_end + long_ctr * 64;
+            //     add_run(answer, run_start, run_end - 1);
+            //     cur_word = cur_word_with_1s & (cur_word_with_1s + 1);
+            // }
+            // return answer;
+        } else {
+            unreachable;
+        }
+    }
     pub fn format(c: Container, w: *Io.Writer) !void {
         std.debug.print("{x}-{x}", .{ @intFromEnum(c.typecode), c.address });
         switch (c.typecode) {
@@ -399,16 +501,16 @@ pub const RunContainer = struct {
         run.n_runs += 1;
         return vl;
     }
-    pub fn serialized_size_in_bytes(r: RunContainer) usize {
-        return @sizeOf(u16) + @sizeOf(Rle16) * r.n_runs; // each run requires 2 2-byte entries.
+    pub fn serialized_size_in_bytes(n_runs: u32) usize {
+        return @sizeOf(u16) + @sizeOf(Rle16) * n_runs; // each run requires 2 2-byte entries.
     }
     pub fn size_in_bytes(r: RunContainer) usize {
-        return r.serialized_size_in_bytes();
+        return serialized_size_in_bytes(r.n_runs);
     }
-    pub fn write(r: RunContainer, w: *Io.Writer) !usize {
-        _ = r;
-        _ = w;
-        unreachable;
+    pub fn write(container: RunContainer, w: *Io.Writer) !usize {
+        try w.writeInt(u16, @intCast(container.n_runs), .little);
+        try w.writeSliceEndian(Rle16, container.slice(), .little);
+        return container.size_in_bytes();
     }
     pub fn contains(r: RunContainer, pos: u16) bool {
         var index = misc.interleavedBinarySearch(r.slice(), pos);
@@ -505,6 +607,76 @@ pub const RunContainer = struct {
             );
             run.n_runs = nruns_less + 1 + nruns_greater;
         }
+    }
+
+    /// Get the cardinality of `run'. Requires an actual computation.
+    pub fn cardinality(run: RunContainer) u32 {
+        const n_runs = run.n_runs;
+        const runs = run.runs;
+
+        // by initializing with n_runs, we omit counting the +1 for each pair.
+        var sum = n_runs;
+        for (0..n_runs) |k| {
+            sum += runs[k].length;
+        }
+
+        return sum;
+    }
+
+    /// Converts a run container to either an array or a bitset, IF it saves space.
+    ///
+    /// If a conversion occurs, the caller is responsible to free the original
+    /// container and he becomes responsible to free the new one.
+    pub fn convert_run_to_efficient_container(c: *const RunContainer, allocator: mem.Allocator) !Container {
+        const size_as_run_container = RunContainer.serialized_size_in_bytes(c.n_runs);
+
+        const size_as_bitset_container = BitsetContainer.serialized_size_in_bytes();
+
+        const card = c.cardinality();
+        const size_as_array_container = ArrayContainer.serialized_size_in_bytes(card);
+
+        const min_size_non_run =
+            if (size_as_bitset_container < size_as_array_container)
+                size_as_bitset_container
+            else
+                size_as_array_container;
+        if (size_as_run_container <= min_size_non_run) { // no conversion
+            return .init(c);
+        }
+        if (card <= C.DEFAULT_MAX_SIZE) {
+            // to array
+            var answer = try ArrayContainer.create_with_capacity(allocator, card);
+            answer.cardinality = 0;
+            for (0..c.n_runs) |rlepos| {
+                const run_start = c.runs[rlepos].value;
+                const run_end = run_start + c.runs[rlepos].length;
+
+                var run_value = run_start;
+                while (run_value < run_end) : (run_value += 1) {
+                    answer.sorted_values[answer.cardinality] = run_value;
+                    answer.cardinality += 1;
+                }
+            }
+
+            return .create_from_value(allocator, answer);
+        }
+
+        // else to bitset
+        var answer = try BitsetContainer.create(allocator);
+
+        for (0..c.n_runs) |rlepos| {
+            const start = c.runs[rlepos].value;
+            const end = start + c.runs[rlepos].length;
+            BitsetContainer.set_range(answer.words, start, end + 1);
+        }
+        answer.cardinality = card;
+        return try .create_from_value(allocator, answer);
+    }
+    /// assumes that container has adequate space.  Run from [s,e] (inclusive)
+    pub fn add_run(c: *RunContainer, s: u32, e: u32) void {
+        c.runs[c.n_runs].value = @intCast(s);
+        c.runs[c.n_runs].length = @intCast(e - s);
+        c.n_runs += 1;
     }
 
     pub fn format(c: RunContainer, w: *Io.Writer) !void {

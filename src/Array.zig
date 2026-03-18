@@ -105,7 +105,7 @@ pub fn set_container_at_index(ra: *Array, i: u32, c: Container) void {
 }
 
 /// This function is endian-sensitive.
-pub fn portable_serialize(ra: Array, w: *std.Io.Writer) !usize {
+pub fn portable_serialize(ra: Array, w: *std.Io.Writer, temp_allocator: mem.Allocator) !usize {
     const cslen: u32 = @intCast(ra.containers.len);
     if (cslen == 0) {
         try w.writeStruct(root.Cookie{
@@ -126,14 +126,15 @@ pub fn portable_serialize(ra: Array, w: *std.Io.Writer) !usize {
         }, .little);
         written_count += @sizeOf(root.Cookie);
         const s = (cslen + 7) / 8;
-        written_count += try w.writeSplat(&.{"\x00"}, s);
-        if (true) unreachable; // TODO
-        for (slice.items(.container)) |c| {
+        const buf = try temp_allocator.alloc(u8, s);
+        @memset(buf, 0);
+        for (slice.items(.container), 0..) |c, i| {
             if (c.get_container_type() == .run) {
-                // buf[i / 8] |= 1 << (i % 8);
-                unreachable; // TODO
+                buf[i / 8] |= @as(u8, 1) << @intCast(i % 8);
             }
         }
+        try w.writeAll(buf);
+        written_count += s;
         startOffset = if (cslen < C.NO_OFFSET_THRESHOLD)
             4 + 4 * cslen + s
         else
@@ -311,7 +312,10 @@ pub fn replace_key_and_container_at_index(
 ///
 pub fn shift_tail(ra: *Array, allocator: mem.Allocator, count: u32, distance: i32) !void {
     // std.debug.print("ra.shift_tail({},{}) containers.len {} containers.capacity {}\n", .{ count, distance, ra.containers.len, ra.containers.capacity });
-    if (distance > 0) try ra.extend_array(allocator, distance);
+    if (distance > 0) {
+        try ra.extend_array(allocator, distance);
+        ra.containers.len += @intCast(distance);
+    }
     // std.debug.print("  containers.len {} containers.capacity {}\n", .{ ra.containers.len, ra.containers.capacity });
     if (count == 0) return;
     const srcpos = misc.cast(i32, ra.containers.len - count);

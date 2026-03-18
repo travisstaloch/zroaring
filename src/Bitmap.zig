@@ -459,7 +459,7 @@ fn containerptr_add(
             return c;
         }
     } else {
-        var new_c = Container.init(try root.ArrayContainer.create(allocator));
+        var new_c = try Container.create_from_value(allocator, try root.ArrayContainer.create(allocator));
         errdefer new_c.const_cast(.array).deinit(allocator);
         new_c = try new_c.add(allocator, @truncate(val));
         // we could just assume that it stays an array container
@@ -483,7 +483,7 @@ pub fn add_checked(r: *Bitmap, x: u32) bool {
 /// Add all values in range [min, max]
 ///
 pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
-    // std.debug.print("add_range_closed({},{})", .{ min, max });
+    // std.debug.print("add_range_closed({},{})\n", .{ min, max });
     if (min > max) return;
     const ra = &r.high_low_container;
     const min_key = min >> 16;
@@ -500,31 +500,32 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     if (num_required_containers > common_length) {
         try ra.shift_tail(allocator, suffix_length, @intCast(num_required_containers - common_length));
     }
-    if (common_length == 0) return;
 
-    var src = prefix_length + common_length - 1;
-    var dst: u32 = @intCast(ra.containers.len - suffix_length - 1);
+    var src = misc.cast(i32, prefix_length + common_length) - 1;
+    var dst = misc.cast(i32, ra.containers.len - suffix_length) - 1;
     var key = max_key;
     // std.debug.print("key {} min_key {} max_key {}\n", .{ key, min_key, max_key });
-    while (key != min_key) : (key -= 1) { // beware of min_key==0
-        const container_min: u16 = if (min_key == key) @truncate(min) else 0;
-        const container_max: u16 = if (max_key == key) @truncate(max) else 0xffff;
+    while (key != min_key -% 1) : (key -%= 1) { // beware of min_key==0
+        const container_min = if (min_key == key) min else 0;
+        const container_max = if (max_key == key) max else 0xffff;
         var new_container: Container = .zero;
         const s = ra.containers.slice();
-        if (src >= 0 and s.items(.key)[src] == key) {
-            ra.unshare_container_at_index(@truncate(src));
+        // std.debug.print("src {}\n", .{src});
+        if (src >= 0 and s.items(.key)[@intCast(src)] == key) {
+            const srcu: u16 = @intCast(src);
+            ra.unshare_container_at_index(srcu);
             new_container =
-                try s.items(.container)[src].add_range(allocator, container_min, container_max);
-            if (new_container != s.items(.container)[src]) {
-                s.items(.container)[src].deinit(allocator);
+                try s.items(.container)[srcu].add_range(allocator, container_min, container_max);
+            if (new_container != s.items(.container)[srcu]) {
+                s.items(.container)[srcu].deinit(allocator);
             }
             src -= 1;
         } else {
             new_container = try .from_range(allocator, container_min, container_max + 1, 1);
         }
-        // std.debug.print("new_container {f}", .{new_container});
+        // std.debug.print("dst {}, new_container {f}\n", .{ dst, new_container });
         assert(!new_container.is_null());
-        ra.replace_key_and_container_at_index(dst, @truncate(key), new_container);
+        ra.replace_key_and_container_at_index(@intCast(dst), @truncate(key), new_container);
         dst -= 1;
     }
 }
@@ -535,7 +536,7 @@ const u32_max = std.math.maxInt(u32);
 ///
 pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u64, max: u64) !void {
     // std.debug.print("add_range({},{})\n", .{ min, max });
-    if (max <= min or min > u32_max + 1) {
+    if (max <= min or min > @as(u64, u32_max) + 1) {
         return;
     }
     try r.add_range_closed(allocator, @intCast(min), @intCast(max - 1));
@@ -751,9 +752,15 @@ pub fn remove_run_compression(r: *Bitmap) bool {
 /// Additional savings might be possible by calling `shrinkToFit()`.
 ///
 pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
-    _ = allocator;
-    _ = r;
-    unreachable; // TODO
+    var answer = false;
+    for (r.high_low_container.containers.items(.container), 0..) |c, i| {
+        r.high_low_container.unshare_container_at_index(@intCast(i)); // TODO: this introduces extra cloning!
+        const c1 = try c.convert_run_optimize(allocator);
+        if (c1.typecode == .run) answer = true;
+        if (c != c1)
+            r.high_low_container.set_container_at_index(@intCast(i), c1);
+    }
+    return answer;
 }
 
 ///
@@ -994,8 +1001,8 @@ pub fn portable_size_in_bytes(r: Bitmap) usize {
 /// checksums so that, at deserialization, you can be confident
 /// that you are recovering the correct data.
 ///
-pub fn portable_serialize(r: Bitmap, w: *Io.Writer) !usize {
-    return try r.high_low_container.portable_serialize(w);
+pub fn portable_serialize(r: Bitmap, w: *Io.Writer, temp_allocator: mem.Allocator) !usize {
+    return try r.high_low_container.portable_serialize(w, temp_allocator);
 }
 
 /// "Frozen" serialization format imitates memory layout of Bitmap.

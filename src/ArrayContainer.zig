@@ -19,20 +19,16 @@ pub fn init_capacity(allocator: mem.Allocator, cap: u32) !ArrayContainer {
     };
 }
 
-pub fn create(allocator: mem.Allocator) !*ArrayContainer {
+pub fn create(allocator: mem.Allocator) !ArrayContainer {
     return try create_with_capacity(allocator, 0);
 }
-pub fn create_with_capacity(allocator: mem.Allocator, cap: u32) !*ArrayContainer {
-    // return create_with_capacity(allocator, ARRAY_DEFAULT_INIT_SIZE);
-    const ret = try allocator.create(ArrayContainer);
-    errdefer allocator.destroy(ret);
+pub fn create_with_capacity(allocator: mem.Allocator, cap: u32) !ArrayContainer {
     const sorted_values = try allocator.alignedAlloc(u16, .fromByteUnits(ALIGNMENT), cap);
-    ret.* = .{ .sorted_values = sorted_values.ptr, .capacity = cap, .cardinality = 0 };
-    return ret;
+    return .{ .sorted_values = sorted_values.ptr, .capacity = cap, .cardinality = 0 };
 }
 /// Create a new array containing all values in [min,max).
-pub fn create_range(allocator: mem.Allocator, min: u32, max: u32) !*ArrayContainer {
-    const answer = try create_with_capacity(allocator, max - min + 1);
+pub fn create_range(allocator: mem.Allocator, min: u32, max: u32) !ArrayContainer {
+    var answer = try create_with_capacity(allocator, max - min + 1);
     answer.cardinality = 0;
     for (min..max) |k| {
         answer.sorted_values[answer.cardinality] = @intCast(k);
@@ -251,6 +247,24 @@ pub fn to_bitset_container(ac: *ArrayContainer, allocator: mem.Allocator) !Bitse
     var ans = try BitsetContainer.create(allocator);
     for (0..ac.cardinality) |i| _ = ans.set(ac.sorted_values[i]);
     return ans;
+}
+/// Compute the number of runs
+pub fn number_of_runs(ac: *const ArrayContainer) u32 {
+    // Can SIMD work here?
+    var nr_runs: u32 = 0;
+    var prev: i32 = -2;
+    var p: [*]u16 = ac.sorted_values;
+    while (p != ac.sorted_values + ac.cardinality) : (p += 1) {
+        if (p[0] != prev + 1) nr_runs += 1;
+        prev = p[0];
+    }
+    return nr_runs;
+}
+///
+/// Return the serialized size in bytes of a container having cardinality "card".
+///
+pub fn serialized_size_in_bytes(card: u32) u32 {
+    return card * @sizeOf(u16);
 }
 
 pub fn format(c: ArrayContainer, w: *Io.Writer) !void {

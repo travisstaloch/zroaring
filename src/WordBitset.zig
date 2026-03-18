@@ -333,6 +333,33 @@ pub fn WordBitset(options: struct {
             }
         };
 
+        ///
+        /// Return the serialized size in bytes of a container.
+        ///
+        pub fn serialized_size_in_bytes() u16 {
+            return SIZE_IN_BYTES;
+        }
+
+        ///
+        /// Set all bits in indexes [begin,end) to true.
+        ///
+        pub fn set_range(words: WordsPtrAligned, start: u32, end: u32) void {
+            if (start == end) return;
+            const firstword = start / 64;
+            const endword = (end - 1) / 64;
+            if (firstword == endword) {
+                words[firstword] |= ((~word_zero) << @intCast(start % 64)) &
+                    ((~word_zero) >> @intCast((~end + 1) % 64));
+                return;
+            }
+            words[firstword] |= (~word_zero) << @intCast(start % 64);
+            var i = firstword;
+            while (i < endword) : (i += 1) {
+                words[i] = ~word_zero;
+            }
+            words[endword] |= (~word_zero) >> @intCast((~end + 1) % 64);
+        }
+
         pub fn format(self: Self, w: *std.Io.Writer) !void {
             try w.print("{}", .{self.cardinality});
             if (build_options.trace) {
