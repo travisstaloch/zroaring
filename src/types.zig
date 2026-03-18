@@ -8,7 +8,7 @@ pub const Typecode = enum(u8) {
 
     pub fn Type(comptime tc: Typecode) type {
         return switch (tc) {
-            inline else => |t| @FieldType(Container, @tagName(t)),
+            inline else => |typecode| @FieldType(Container, @tagName(typecode)),
         };
     }
 

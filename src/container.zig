@@ -29,6 +29,7 @@ pub const Container = packed struct(usize) {
         return switch (T) {
             ArrayContainer, BitsetContainer, RunContainer, SharedContainer => {
                 const ret = try allocator.create(T);
+                // std.debug.print("create_from_value {s} {f}\n", .{ @typeName(T), c });
                 ret.* = c;
                 return .init(ret);
             },
@@ -38,9 +39,10 @@ pub const Container = packed struct(usize) {
 
     pub fn deinit(c: Container, allocator: mem.Allocator) void {
         switch (c.typecode) {
-            inline else => |t| {
-                c.mut_cast(t).deinit(allocator);
-                allocator.destroy(c.mut_cast(t));
+            inline else => |typecode| {
+                // std.debug.print("Container.deinit() {t} {f}\n", .{ t, c.mut_cast(t) });
+                c.mut_cast(typecode).deinit(allocator);
+                allocator.destroy(c.mut_cast(typecode));
             },
         }
     }
@@ -50,12 +52,12 @@ pub const Container = packed struct(usize) {
     }
 
     pub fn is_null(c: Container) bool {
-        return c == mem.zeroes(Container);
+        return c == Container.zero;
     }
 
     pub fn get_cardinality(c: Container) u64 {
         return switch (c.typecode) {
-            inline else => |t| c.const_cast(t).cardinality,
+            inline else => |typecode| c.const_cast(typecode).cardinality,
             .run => c.const_cast(.run).get_cardinality_scalar(), // TODO avx2, avx512
             .shared => unreachable, // TODO
         };
@@ -76,7 +78,7 @@ pub const Container = packed struct(usize) {
     pub fn size_in_bytes(c: Container) usize {
         // std.debug.print("c {x}-{x}\n", .{ @intFromEnum(c.typecode), c.address });
         const ret = switch (c.typecode) {
-            inline else => |t| c.unwrap_shared().const_cast(t).size_in_bytes(),
+            inline else => |typecode| c.unwrap_shared().const_cast(typecode).size_in_bytes(),
         };
         // std.debug.print("Container.size_in_bytes {t} {}\n", .{ c.typecode, ret });
         return ret;
@@ -158,7 +160,7 @@ pub const Container = packed struct(usize) {
     pub fn write(c: Container, w: *Io.Writer) !usize {
         const c1 = c.unwrap_shared();
         return switch (c1.typecode) {
-            inline else => |t| try c1.const_cast(t).write(w),
+            inline else => |typecode| try c1.const_cast(typecode).write(w),
             .shared => unreachable, // TODO
         };
     }
@@ -166,7 +168,7 @@ pub const Container = packed struct(usize) {
     pub fn contains(c: Container, val: u16) bool {
         const c1 = c.unwrap_shared();
         const ret = switch (c1.typecode) {
-            inline else => |t| c1.const_cast(t).contains(val),
+            inline else => |typecode| c1.const_cast(typecode).contains(val),
             .shared => unreachable, // TODO
         };
         // std.debug.print("Container.contains({}) {t} {}\n", .{ val, c1.typecode, ret });
@@ -239,9 +241,9 @@ pub const Container = packed struct(usize) {
     ///range [min, max]. Caller is responsible for freeing run container.
     ///
     pub fn from_run_range(run: *const RunContainer, min: u32, max: u32) Container {
-        _ = run; // autofix
-        _ = min; // autofix
-        _ = max; // autofix
+        _ = run;
+        _ = min;
+        _ = max;
         unreachable;
     }
 
@@ -394,7 +396,7 @@ pub const Container = packed struct(usize) {
             assert(run_start >= 0);
             // now prev is the last seen value
             answer.add_run(@intCast(run_start), @intCast(prev));
-            c_qua_array.deinit(allocator);
+            c.deinit(allocator);
             return try .create_from_value(allocator, answer);
         } else if (c.typecode == .bitset) { // run conversions on bitset
             unreachable; // TODO
@@ -456,7 +458,7 @@ pub const Container = packed struct(usize) {
         }
     }
     pub fn format(c: Container, w: *Io.Writer) !void {
-        std.debug.print("{x}-{x}", .{ @intFromEnum(c.typecode), c.address });
+        // std.debug.print("{x}-{x}", .{ @intFromEnum(c.typecode), c.address });
         switch (c.typecode) {
             inline else => |tag| {
                 try w.print("{t} ", .{tag});
@@ -692,7 +694,7 @@ pub const RunContainer = struct {
     }
 
     pub fn format(c: RunContainer, w: *Io.Writer) !void {
-        try w.print("RunConatiner values {any}", .{c.slice()});
+        try w.print("n_runs {}", .{c.n_runs});
     }
 };
 
@@ -707,7 +709,7 @@ pub const SharedContainer = extern struct {
         return s.container.size_in_bytes();
     }
     pub fn format(c: SharedContainer, w: *Io.Writer) error{WriteFailed}!void {
-        try w.print("SharedContainer ", .{});
+        try w.print("", .{});
         try c.container.format(w);
     }
 };

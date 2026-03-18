@@ -5,7 +5,8 @@ fn validateRoundTrip(allocator: mem.Allocator, name: []const u8, values: []const
     // build zroaring bitmap
     var zr: Bitmap = .{};
     defer zr.deinit(allocator);
-    for (values) |v| try zr.add(allocator, v);
+    try zr.add_many(allocator, values);
+    for (values) |v| try testing.expect(zr.contains(v));
     if (run_optimize) _ = try zr.run_optimize(allocator);
     // std.debug.print("zr {any}\n", .{zr});
     // std.debug.print("{s} zr {f}\n", .{ name, zr });
@@ -37,6 +38,8 @@ fn validateRoundTrip(allocator: mem.Allocator, name: []const u8, values: []const
         c.roaring_bitmap_portable_serialize(cr, @ptrCast(cr_buf.ptr)),
         zr.portable_serialize(&zr_w, arena.allocator()),
     );
+    // std.debug.print("'{s}' values {any}\nzr {f}\n", .{ name, values[0..@min(20, values.len)], zr });
+    // std.debug.print("cr_buf {x}\nzr_buf {x}\n", .{ cr_buf, zr_buf });
     try testing.expectEqualSlices(u8, cr_buf, zr_buf);
 
     // deserialize zr bytes with croaring. check equal.
@@ -99,7 +102,7 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, name: []const u8, start: u32
 
     // deserialize croaring bytes with zr
     var cr_r: std.Io.Reader = .fixed(cr_buf);
-    var zr2 = try Bitmap.portable_deserialize_safe(&cr_r, allocator);
+    var zr2 = try Bitmap.portable_deserialize_safe(allocator, &cr_r);
     defer zr2.deinit(allocator);
     try testing.expect(zr.equals(zr2));
 
@@ -153,7 +156,7 @@ fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []
     // std.debug.print("  PASS: {s}{s} (FrozenBitmap, {d} values)\n", .{ name, suffix, values.len });
 }
 
-pub fn validate() !void {
+fn validate() !void {
     const allocator = testing.allocator;
     // Basic tests:
     try validateRoundTrip(allocator, "empty", &.{}, false);
@@ -177,7 +180,6 @@ pub fn validate() !void {
     // Full chunk as run (65536 values) - CRoaring auto-optimizes to run, so we must too
     // (This tests run serialization, not bitset - renamed to avoid confusion)
     try validateRangeRoundTrip(allocator, "run_full_chunk", 0, 65535, true);
-    if (true) return; // TODO
 
     // Multiple container tests:
     // Values at chunk boundaries
@@ -202,6 +204,7 @@ pub fn validate() !void {
     for (0..100) |i| multi_range[100 + i] = @intCast(500 + i); // 500-599
     for (0..100) |i| multi_range[200 + i] = @intCast(1000 + i); // 1000-1099
     try validateRoundTrip(allocator, "multi_range_runs", &multi_range, true);
+    if (true) return; // TODO
     // Alternating values (doesn't compress to runs)
     var alternating: [100]u32 = undefined;
     for (0..100) |i| alternating[i] = @intCast(i * 2); // 0, 2, 4, 6...

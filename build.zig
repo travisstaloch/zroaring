@@ -12,13 +12,18 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "build-options", .module = options.createModule() }},
     });
 
-    const tests_mod = b.addTest(.{
+    const tests = b.addTest(.{
         .root_module = mod,
         .filters = if (b.option([]const []const u8, "test-filter", "filter tests")) |o| o else &.{},
     });
-    const run_tests_mod = b.addRunArtifact(tests_mod);
+    const avx512 = b.option(bool, "avx512", "enable croaring avx512.  default false.") orelse false;
+    tests.root_module.addIncludePath(b.path("src"));
+    tests.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
+    tests.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
+    tests.linkLibC();
+    const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_tests_mod.step);
+    test_step.dependOn(&run_tests.step);
 
     const lib = b.addLibrary(.{ .root_module = mod, .name = "zroaring" });
     const docs = b.addInstallDirectory(.{
@@ -32,11 +37,5 @@ pub fn build(b: *std.Build) void {
     const exe_check = b.addExecutable(.{ .name = "check", .root_module = mod });
     const check = b.step("check", "Check if everything compiles");
     check.dependOn(&exe_check.step);
-    check.dependOn(&tests_mod.step);
-
-    const avx512 = b.option(bool, "avx512", "enable croaring avx512 support") orelse false;
-    tests_mod.root_module.addIncludePath(b.path("src"));
-    tests_mod.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
-    tests_mod.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
-    tests_mod.linkLibC();
+    check.dependOn(&tests.step);
 }

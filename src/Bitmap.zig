@@ -395,7 +395,9 @@ pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !void {
     const end = vals.ptr + vals.len;
     var cur = vals.ptr;
     var idx: u32 = undefined;
+    // std.debug.print("add_many {}\n", .{vals.len});
     const container = try r.containerptr_add(allocator, cur[0], &idx);
+    errdefer container.deinit(allocator);
     var context: BulkContext = .{
         .container = container,
         .idx = idx,
@@ -407,13 +409,19 @@ pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !void {
     }
 }
 
-pub fn add_bulk_impl(r: *Bitmap, allocator: mem.Allocator, context: *BulkContext, val: u32) !void {
-    // std.debug.print("add_bulk_impl {f}\n", .{r});
+fn add_bulk_impl(
+    r: *Bitmap,
+    allocator: mem.Allocator,
+    context: *BulkContext,
+    val: u32,
+) !void {
+    // std.debug.print("add_bulk_impl val {}\n", .{val});
     const key: u16 = @truncate(val >> 16);
     if (context.container.is_null() or context.key != key) {
         var idx: u32 = undefined;
+        const container = try r.containerptr_add(allocator, val, &idx);
         context.* = .{
-            .container = try r.containerptr_add(allocator, val, &idx),
+            .container = container,
             .idx = idx,
             .key = key,
         };
@@ -432,10 +440,9 @@ pub fn add_bulk_impl(r: *Bitmap, allocator: mem.Allocator, context: *BulkContext
     }
 }
 
-/// this is like roaring_bitmap_add, but it populates pointer arguments in such a
-/// way
-/// that we can recover the container touched, which, in turn can be used to
-/// accelerate some functions (when you repeatedly need to add to the same
+/// this is like roaring_bitmap_add, but it populates pointer arguments in such
+/// a way that we can recover the container touched, which, in turn can be used
+/// to accelerate some functions (when you repeatedly need to add to the same
 /// container)
 fn containerptr_add(
     r: *Bitmap,
@@ -445,27 +452,31 @@ fn containerptr_add(
 ) !Container {
     const ra = &r.high_low_container;
     const key: u16 = @truncate(val >> 16);
-    const found, const i = ra.get_index(key);
-    if (found) {
-        ra.unshare_container_at_index(i);
-        const c = ra.get_container_at_index(i);
+    const i = misc.binarySearch(ra.containers.items(.key), key);
+    // std.debug.print("containerptr_add val {} i {}\n", .{ val, i });
+    if (i >= 0) {
+        const iu: u16 = @intCast(i);
+        ra.unshare_container_at_index(iu);
+        const c = ra.get_container_at_index(iu);
         const c2 = try c.add(allocator, @truncate(val));
-        index.* = i;
+        index.* = iu;
         if (c2 != c) {
             c.deinit(allocator);
-            ra.set_container_at_index(i, c2);
+            ra.set_container_at_index(iu, c2);
             return c2;
         } else {
             return c;
         }
     } else {
-        var new_c = try Container.create_from_value(allocator, try root.ArrayContainer.create(allocator));
-        errdefer new_c.const_cast(.array).deinit(allocator);
-        new_c = try new_c.add(allocator, @truncate(val));
-        // we could just assume that it stays an array container
-        try ra.insert_new_key_value_at(allocator, i, key, new_c);
-        index.* = i;
-        return new_c;
+        var new_ac: root.ArrayContainer = .init;
+        errdefer new_ac.deinit(allocator);
+        try new_ac.add(allocator, @truncate(val));
+        // we can assume that it stays an array container
+        const c = try Container.create_from_value(allocator, new_ac);
+        errdefer allocator.destroy(c.mut_cast(.array)); // avoid double deinit: dont't use c.deinit
+        try ra.insert_new_key_value_at(allocator, @intCast(-i - 1), key, c);
+        index.* = @intCast(-i - 1);
+        return c;
     }
 }
 
@@ -490,10 +501,11 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     const max_key = max >> 16;
 
     const num_required_containers = max_key - min_key + 1;
-    const suffix_length =
-        misc.count_greater(ra.containers.items(.key), @truncate(max_key));
-    const prefix_length =
-        misc.count_less(ra.containers.items(.key)[0 .. ra.containers.len - suffix_length], @truncate(min_key));
+    const suffix_length = misc.count_greater(ra.containers.items(.key), @truncate(max_key));
+    const prefix_length = misc.count_less(
+        ra.containers.items(.key)[0 .. ra.containers.len - suffix_length],
+        @truncate(min_key),
+    );
     const common_length = ra.containers.len - prefix_length - suffix_length;
 
     // std.debug.print("num_required_containers {}, common_length {}, {f}\n", .{ num_required_containers, common_length, ra });
@@ -599,13 +611,13 @@ pub fn contains(r: Bitmap, val: u32) bool {
     const hb: u16 = @truncate(val >> 16);
 
     // the next function call involves a binary search and lots of branching.
-    const found, const i = r.high_low_container.get_index(hb);
+    const i = misc.binarySearch(r.high_low_container.containers.items(.key), hb);
     // std.debug.print("Bitmap.contains {} {}. found {}, key {}\n", .{ val, hb, found, i });
-    if (!found) return false;
+    if (i < 0) return false;
 
     // rest might be a tad expensive, possibly involving another round of binary
     // search
-    return r.high_low_container.get_container_at_index(i).contains(@truncate(val));
+    return r.high_low_container.get_container_at_index(@intCast(i)).contains(@truncate(val));
 }
 
 ///
@@ -755,10 +767,13 @@ pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
     var answer = false;
     for (r.high_low_container.containers.items(.container), 0..) |c, i| {
         r.high_low_container.unshare_container_at_index(@intCast(i)); // TODO: this introduces extra cloning!
+
         const c1 = try c.convert_run_optimize(allocator);
         if (c1.typecode == .run) answer = true;
-        if (c != c1)
+        if (c != c1) {
+            // std.debug.print("run_optimize. converted {f} to {f}\n", .{ c, c1 });
             r.high_low_container.set_container_at_index(@intCast(i), c1);
+        }
     }
     return answer;
 }
@@ -796,18 +811,15 @@ pub fn serialize(r: Bitmap, w: *Io.Writer) !usize {
     const sizeasarray = cardinality * @sizeOf(u32) + @sizeOf(u32);
 
     if (portablesize < sizeasarray) {
-        try w.writeByte(CROARING_SERIALIZATION_CONTAINER);
+        try w.writeByte(C.SERIALIZATION_CONTAINER);
         return r.portable_serialize(w) + 1;
     } else {
-        try w.writeByte(CROARING_SERIALIZATION_ARRAY_UINT32);
+        try w.writeByte(C.SERIALIZATION_ARRAY_UINT32);
         try w.writeInt(@TypeOf(cardinality), cardinality, .little);
         try w.writeSliceEndian(u32, r.high_low_container.containers.items(.key), .little);
         return 1 + sizeasarray;
     }
 }
-
-const CROARING_SERIALIZATION_ARRAY_UINT32 = 1;
-const CROARING_SERIALIZATION_CONTAINER = 2;
 
 ///
 /// Use with `serialize()`.
@@ -824,16 +836,14 @@ const CROARING_SERIALIZATION_CONTAINER = 2;
 pub fn deserialize(r: *Io.Reader) !Bitmap {
     const first_byte = try r.peekByte();
     // std.debug.print("deserialize first_byte {}\n", .{first_byte});
-    if (first_byte == CROARING_SERIALIZATION_ARRAY_UINT32) {
+    if (first_byte == C.SERIALIZATION_ARRAY_UINT32) {
         // This looks like a compressed set of uint32_t elements
-
         const card = try r.takeInt(u32, .little);
         var bitmap: Bitmap = .{};
         var context: BulkContext = mem.zeroes(BulkContext);
         for (0..card) |_| try bitmap.add_bulk(&context, try r.takeInt(u32, .little));
-
         return bitmap;
-    } else if (first_byte == CROARING_SERIALIZATION_CONTAINER) {
+    } else if (first_byte == C.SERIALIZATION_CONTAINER) {
         return try portable_deserialize(r);
     } else return error.UnexpectedFirstByte;
 }
@@ -885,11 +895,8 @@ pub fn size_in_bytes(r: Bitmap) usize {
 pub fn portable_deserialize(allocator: mem.Allocator, r: *Io.Reader) !Bitmap {
     var arena: std.heap.ArenaAllocator = .init(allocator);
     defer arena.deinit();
-    var rb: Bitmap = .{ .high_low_container = try .portable_deserialize(
-        allocator,
-        r,
-        arena.allocator(),
-    ) };
+    const array = try Array.portable_deserialize(allocator, r, arena.allocator());
+    var rb: Bitmap = .{ .high_low_container = array };
     rb.set_copy_on_write(false);
     return rb;
 }
@@ -929,7 +936,7 @@ pub fn portable_deserialize(allocator: mem.Allocator, r: *Io.Reader) !Bitmap {
 ///
 /// The returned pointer may be NULL in case of errors.
 ///
-pub fn portable_deserialize_safe(r: *Io.Reader, allocator: mem.Allocator) !Bitmap {
+pub fn portable_deserialize_safe(allocator: mem.Allocator, r: *Io.Reader) !Bitmap {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     var ret: Bitmap = .{
@@ -1555,7 +1562,7 @@ pub fn iterator32_skip_backward(it: *Iterator32, count: u32) u32 {
 }
 
 pub fn format(b: Bitmap, w: *Io.Writer) !void {
-    try w.print("Bitmap.hi_lo_container ", .{});
+    try w.print("Bitmap ", .{});
     try b.high_low_container.format(w);
 }
 test Bitmap {
@@ -1571,3 +1578,4 @@ const Array = root.Array;
 const Container = root.Container;
 const Typecode = root.Typecode;
 const misc = @import("misc.zig");
+const C = @import("constants.zig");

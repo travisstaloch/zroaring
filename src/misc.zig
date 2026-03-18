@@ -8,7 +8,7 @@
 // TODO use sort.lowerBound()?
 pub fn binarySearch(array: []const u16, ikey: u16) i32 {
     var low: i32 = 0;
-    var high: i32 = @bitCast(@as(u32, @intCast(array.len)));
+    var high: i32 = @intCast(array.len);
     high -= 1;
     while (low <= high) {
         const middleIndex = (low + high) >> 1;

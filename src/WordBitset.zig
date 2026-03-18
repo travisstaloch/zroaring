@@ -361,7 +361,7 @@ pub fn WordBitset(options: struct {
         }
 
         pub fn format(self: Self, w: *std.Io.Writer) !void {
-            try w.print("{}", .{self.cardinality});
+            try w.print("cardinality {}", .{self.cardinality});
             if (build_options.trace) {
                 try w.print(
                     " Bitmap({: <4}{: <6}{: <5}) value types: {: <3} {: <3} words (needed: {: <5} padded: {: <5} size_in_bytes: {: <5}) block: {s: <6} mask: {} blocks {}",
@@ -393,8 +393,8 @@ fn TestNs(MIN: comptime_int, MAX: comptime_int, Word: type) type {
         test format {
             var b: Builder = undefined;
             if (!build_options.trace) {
-                try testing.expectFmt("0\n", "{f}\n", .{b.init()});
-                try testing.expectFmt("2\n", "{f}\n", .{b.initBatch(&.{ MIN, MIN + 1 })});
+                try testing.expectFmt("cardinality 0\n", "{f}\n", .{b.init()});
+                try testing.expectFmt("cardinality 2\n", "{f}\n", .{b.initBatch(&.{ MIN, MIN + 1 })});
             } else {
                 // std.debug.print("{f}\n", .{b.init()});
                 // std.debug.print("{f}\n", .{b.initBatch(&.{ MIN, MIN + 1 })});

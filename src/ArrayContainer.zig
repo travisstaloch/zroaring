@@ -19,9 +19,6 @@ pub fn init_capacity(allocator: mem.Allocator, cap: u32) !ArrayContainer {
     };
 }
 
-pub fn create(allocator: mem.Allocator) !ArrayContainer {
-    return try create_with_capacity(allocator, 0);
-}
 pub fn create_with_capacity(allocator: mem.Allocator, cap: u32) !ArrayContainer {
     const sorted_values = try allocator.alignedAlloc(u16, .fromByteUnits(ALIGNMENT), cap);
     return .{ .sorted_values = sorted_values.ptr, .capacity = cap, .cardinality = 0 };
@@ -82,10 +79,8 @@ pub fn read(container: *ArrayContainer, allocator: mem.Allocator, cardinality: u
 }
 
 /// Returns (found, index), if not found, index is where to insert x
-pub fn get_index(values: []const u16, x: u16) Array.GetIndex {
-    const idx = misc.binarySearch(values, x);
-    const found = idx >= 0;
-    return .{ found, @intCast(if (found) idx else -idx - 1) };
+pub fn get_index(values: []const u16, x: u16) i32 {
+    return misc.binarySearch(values, x);
 }
 
 pub const AddResult = union(enum) { added, already_present, not_added };
@@ -100,6 +95,8 @@ pub fn try_add(
     /// max cardinality
     max_card: u32,
 ) !AddResult {
+    assert(c.cardinality <= C.DEFAULT_MAX_SIZE);
+    defer assert(c.cardinality <= C.DEFAULT_MAX_SIZE);
     const card = c.cardinality;
     // best case, we can append.
     if ((card == 0 or c.sorted_values[card - 1] < value) and card < max_card) {
@@ -107,13 +104,12 @@ pub fn try_add(
         return .added;
     }
 
-    const found, const loc = ArrayContainer.get_index(c.sorted_values[0 .. card - 1], value);
-    return if (found)
+    const loc = misc.binarySearch(c.sorted_values[0 .. card - 1], value);
+    return if (loc >= 0)
         .already_present
     else if (c.cardinality < max_card) blk: {
         if (c.full()) try c.grow(allocator, c.capacity + 1, true);
-        const insert_idx = loc - 1;
-        // @memmove(array + insert_idx + 1, array + insert_idx, (cardinality - insert_idx) * @sizeOf(u16));
+        const insert_idx: u32 = @intCast(-loc - 1);
         @memmove(
             c.sorted_values + insert_idx + 1,
             (c.sorted_values + insert_idx)[0 .. c.cardinality - insert_idx],
@@ -209,9 +205,9 @@ pub fn equals(c1: ArrayContainer, c2: *const ArrayContainer) bool {
     return c1.cardinality == c2.cardinality and mem.eql(u16, c1.slice(), c2.slice());
 }
 
+/// binary search with fallback to linear search for short ranges
 pub fn contains(c: ArrayContainer, pos: u16) bool {
     // std.debug.print("ArrayContainer.contains({}) cardinality {} slice {any}\n", .{ pos, c.cardinality, c.slice() });
-    // binary search with fallback to linear search for short ranges
     var low: i32 = 0;
     const carr = c.slice();
     var high = @as(i32, @intCast(c.cardinality)) - 1;
@@ -268,14 +264,15 @@ pub fn serialized_size_in_bytes(card: u32) u32 {
 }
 
 pub fn format(c: ArrayContainer, w: *Io.Writer) !void {
-    try w.print("ArrayContainer {any}\n", .{c});
-    try w.print("  values {any}", .{c.slice()[0..@min(20, c.cardinality)]});
+    try w.print("cardinality {}", .{c.cardinality});
 }
 
 const std = @import("std");
 const mem = std.mem;
 const Io = std.Io;
+const assert = std.debug.assert;
 const root = @import("root.zig");
 const Array = root.Array;
 const BitsetContainer = root.BitsetContainer;
 const misc = @import("misc.zig");
+const C = @import("constants.zig");

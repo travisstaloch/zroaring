@@ -35,7 +35,6 @@ pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !Array {
 fn clear_containers(ra: *Array, allocator: mem.Allocator) void {
     for (0..ra.containers.len) |i| {
         const c = ra.containers.items(.container)[i];
-        // std.debug.print("c {f}\n", .{c});
         c.deinit(allocator);
     }
 }
@@ -83,9 +82,15 @@ pub fn insert_new_key_value_at(ra: *Array, allocator: mem.Allocator, i: u32, key
     ra.containers.len += 1;
     const containers = ra.containers.slice();
     // May be an optimization opportunity with DIY memmove
-    @memmove(containers.items(.key).ptr[i + 1 ..], containers.items(.key)[i..]);
+    @memmove(
+        containers.items(.key).ptr[i + 1 ..],
+        containers.items(.key)[i..],
+    );
     containers.items(.key)[i] = key;
-    @memmove(containers.items(.container).ptr[i + 1 ..], containers.items(.container)[i..]);
+    @memmove(
+        containers.items(.container).ptr[i + 1 ..],
+        containers.items(.container)[i..],
+    );
     containers.items(.container)[i] = c;
 }
 
@@ -142,18 +147,18 @@ pub fn portable_serialize(ra: Array, w: *std.Io.Writer, temp_allocator: mem.Allo
     } else { // backwards compatibility
         try w.writeStruct(root.Cookie{
             .magic = .SERIAL_COOKIE_NO_RUNCONTAINER,
-            .cardinality_minus1 = @intCast(cslen - 1),
+            .cardinality_minus1 = 0,
         }, .little);
         try w.writeInt(u32, cslen, .little);
         written_count += @sizeOf(root.Cookie) + @sizeOf(u32);
         startOffset = 4 + 4 + 4 * cslen + 4 * cslen;
     }
     for (slice.items(.container), slice.items(.key)) |c, k| {
-        try w.writeInt(@TypeOf(k), k, .little);
+        try w.writeInt(u16, k, .little);
         // get_cardinality returns a value in [1,1<<16], subtracting one
         // we get [0,1<<16 - 1] which fits in 16 bits
         try w.writeInt(u16, @intCast(c.get_cardinality() - 1), .little);
-        written_count += @sizeOf(@TypeOf(k)) + @sizeOf(u16);
+        written_count += @sizeOf(u16) + @sizeOf(u16);
     }
     if ((!hasrun) or (cslen >= C.NO_OFFSET_THRESHOLD)) {
         // write the containers offsets
@@ -213,7 +218,6 @@ pub fn portable_deserialize(
         _ = try r.discard(.limited(size * 4)); // skip the offsets
     }
     for (0..size) |k| { // read containers
-
         const tmp = keyscards[k * 2 + 1];
         const thiscard = @as(u32, tmp) + 1;
         var isbitmap = (thiscard > C.DEFAULT_MAX_SIZE);
@@ -234,15 +238,10 @@ pub fn portable_deserialize(
             answer.containers.items(.container)[k] = .init(c);
         } else if (isrun) {
             const n_runs = try r.takeInt(u16, .little);
-            const containersize = n_runs * @sizeOf(root.Rle16);
-            _ = containersize; // autofix
-            // std.debug.print("n_runs {} containersize {} thiscard {}\n", .{ n_runs, containersize, thiscard });
-            const c = try allocator.create(RunContainer);
-            errdefer allocator.destroy(c);
-            c.* = try RunContainer.create_with_capacity(allocator, n_runs);
+            var c = try RunContainer.create_with_capacity(allocator, n_runs);
             errdefer c.deinit(allocator);
             _ = try c.read(allocator, n_runs, r);
-            answer.containers.items(.container)[k] = .init(c);
+            answer.containers.items(.container)[k] = try .create_from_value(allocator, c);
         } else {
             const c = try allocator.create(ArrayContainer);
             c.* = try ArrayContainer.init_capacity(allocator, thiscard);
@@ -257,11 +256,6 @@ pub fn portable_deserialize(
 
 pub fn orderFn16(a: u16, b: u16) std.math.Order {
     return std.math.order(a, b);
-}
-
-pub const GetIndex = struct { bool, u16 };
-pub fn get_index(ra: Array, key: u16) GetIndex {
-    return ArrayContainer.get_index(ra.containers.items(.key), key);
 }
 
 pub fn has_run_container(ra: Array) bool {
@@ -333,8 +327,9 @@ pub fn shift_tail(ra: *Array, allocator: mem.Allocator, count: u32, distance: i3
 }
 
 pub fn format(ra: Array, w: *Io.Writer) !void {
-    try w.print("Array containers {}\n", .{ra.containers.len});
+    try w.print("containers {}:\n", .{ra.containers.len});
     for (ra.containers.items(.container)) |c| {
+        try w.writeAll("  ");
         try c.format(w);
         try w.writeByte('\n');
     }
@@ -352,7 +347,6 @@ test "c.roaring Array" {
     defer c.bitset_free(b);
     for (0..1000) |i| c.bitset_set(b, 3 * i);
     try testing.expectEqual(1000, c.bitset_count(b));
-    try testing.expectEqual(Element, Element2);
 }
 
 const std = @import("std");
