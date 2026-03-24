@@ -7,6 +7,7 @@ pub const MAX_CARDINALITY = MAX_CONTAINERS;
 pub const SERIALIZATION_ARRAY_UINT32 = 1;
 pub const SERIALIZATION_CONTAINER = 2;
 pub const NO_OFFSET_THRESHOLD = 4;
+pub const BITSET_UNKNOWN_CARDINALITY = std.math.maxInt(u32);
 
 comptime {
     assert(DEFAULT_MAX_SIZE == @divExact(MAX_CONTAINERS, 16));

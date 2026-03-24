@@ -1,10 +1,10 @@
 const root = @import("root.zig");
 
 pub const Typecode = enum(u8) {
-    array,
-    bitset,
-    run,
     shared,
+    bitset,
+    array,
+    run,
 
     pub fn Type(comptime tc: Typecode) type {
         return switch (tc) {
@@ -26,15 +26,16 @@ pub const Typecode = enum(u8) {
 };
 
 const Container = union(Typecode) {
-    array: root.ArrayContainer,
-    bitset: root.BitsetContainer,
-    run: root.RunContainer,
     shared: root.SharedContainer,
+    bitset: root.BitsetContainer,
+    array: root.ArrayContainer,
+    run: root.RunContainer,
 };
 
 pub const Magic = enum(u16) {
     SERIAL_COOKIE_NO_RUNCONTAINER = 12346,
     SERIAL_COOKIE = 12347,
+    FROZEN_COOKIE = 13766,
     _,
 };
 
@@ -43,7 +44,10 @@ pub const Magic = enum(u16) {
 /// Magic cookie value that identifies the type of Roaring Bitmap format.
 /// 12346 (SERIAL_COOKIE_NO_RUNCONTAINER) means no run containers are used.
 /// 12347 (SERIAL_COOKIE) means run containers may be present.
-pub const Cookie = extern struct { magic: Magic, cardinality_minus1: u16 };
+pub const Cookie = extern struct {
+    magic: Magic,
+    cardinality_minus1: u16,
+};
 
 /// Result of adding a value to a set
 pub const AddResult = enum {

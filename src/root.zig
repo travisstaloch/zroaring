@@ -5,8 +5,8 @@
 //!
 
 pub const zroaring = @This();
-pub const Array = @import("Array.zig");
 pub const Bitmap = @import("Bitmap.zig");
+pub const Array = @import("Array.zig");
 const ctr = @import("container.zig");
 pub const Container = ctr.Container;
 pub const ArrayContainer = @import("ArrayContainer.zig");

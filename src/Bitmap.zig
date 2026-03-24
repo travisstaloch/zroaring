@@ -442,7 +442,7 @@ fn add_bulk_impl(
     }
     // std.debug.print("keys {} {any}\n", .{ r.high_low_container.containers.len, r.high_low_container.containers.items(.key) });
     if (@import("builtin").mode == .Debug)
-        assert(std.sort.isSorted(u16, r.high_low_container.containers.items(.key), {}, std.sort.asc(u16)));
+        assert(std.sort.isSorted(u16, r.high_low_container.kvs.items(.key), {}, std.sort.asc(u16)));
 }
 
 /// this is like roaring_bitmap_add, but it populates pointer arguments in such
@@ -457,7 +457,7 @@ fn containerptr_add(
 ) !Container {
     const ra = &r.high_low_container;
     const key: u16, const lb: u16 = .{ @truncate(val >> 16), @truncate(val) };
-    const i = misc.binarySearch(ra.containers.items(.key), key);
+    const i = misc.binarySearch(ra.kvs.items(.key), key);
     // std.debug.print("containerptr_add val {} key {} i {} ra.containers.capacity {}\n", .{ val, key, i, ra.containers.capacity });
     if (i >= 0) {
         const iu: u16 = @intCast(i);
@@ -507,12 +507,12 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     const max_key = max >> 16;
 
     const num_required_containers = max_key - min_key + 1;
-    const suffix_length = misc.count_greater(ra.containers.items(.key), @truncate(max_key));
+    const suffix_length = misc.count_greater(ra.kvs.items(.key), @truncate(max_key));
     const prefix_length = misc.count_less(
-        ra.containers.items(.key)[0 .. ra.containers.len - suffix_length],
+        ra.kvs.items(.key)[0 .. ra.kvs.len - suffix_length],
         @truncate(min_key),
     );
-    const common_length = ra.containers.len - prefix_length - suffix_length;
+    const common_length = ra.kvs.len - prefix_length - suffix_length;
 
     // std.debug.print("num_required_containers {}, common_length {}, {f}\n", .{ num_required_containers, common_length, ra });
     if (num_required_containers > common_length) {
@@ -520,14 +520,14 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     }
 
     var src = misc.cast(i32, prefix_length + common_length) - 1;
-    var dst = misc.cast(i32, ra.containers.len - suffix_length) - 1;
+    var dst = misc.cast(i32, ra.kvs.len - suffix_length) - 1;
     var key = max_key;
     // std.debug.print("key {} min_key {} max_key {}\n", .{ key, min_key, max_key });
     while (key != min_key -% 1) : (key -%= 1) { // beware of min_key==0
         const container_min = if (min_key == key) min else 0;
         const container_max = if (max_key == key) max else 0xffff;
         var new_container: Container = .zero;
-        const s = ra.containers.slice();
+        const s = ra.kvs.slice();
         // std.debug.print("src {}\n", .{src});
         if (src >= 0 and s.items(.key)[@intCast(src)] == key) {
             const srcu: u16 = @intCast(src);
@@ -617,7 +617,7 @@ pub fn contains(r: Bitmap, val: u32) bool {
     const hb: u16 = @truncate(val >> 16);
 
     // the next function call involves a binary search and lots of branching.
-    const i = misc.binarySearch(r.high_low_container.containers.items(.key), hb);
+    const i = misc.binarySearch(r.high_low_container.kvs.items(.key), hb);
     // std.debug.print("Bitmap.contains {} {}. found {}, key {}\n", .{ val, hb, found, i });
     if (i < 0) return false;
 
@@ -673,9 +673,9 @@ pub fn contains_bulk(r: Bitmap, context: BulkContext, val: u32) bool {
 ///
 /// Get the cardinality of the bitmap (number of elements).
 ///
-pub fn get_cardinality(r: Bitmap) u64 {
+pub fn cardinality(r: Bitmap) u64 {
     var card: u64 = 0;
-    for (r.high_low_container.containers.items(.container)) |c| {
+    for (r.high_low_container.kvs.items(.container)) |c| {
         // std.debug.print("c.cardinality {}\n ", .{c.get_cardinality()});
         card += c.get_cardinality();
     }
@@ -705,8 +705,7 @@ pub fn range_cardinality_closed(r: Bitmap, range_start: u32, range_end: u32) u64
 /// Returns true if the bitmap is empty (cardinality is zero).
 ///
 pub fn is_empty(r: Bitmap) bool {
-    _ = r;
-    unreachable; // TODO
+    return r.high_low_container.kvs.len == 0;
 }
 
 ///
@@ -723,7 +722,7 @@ pub fn clear(r: *Bitmap) void {
 ///
 /// Caller is responsible to ensure that there is enough memory allocated, e.g.
 ///
-///     ans = malloc(roaring_bitmap_get_cardinality(bitmap) * sizeof(uint32_t));
+///     ans = malloc(roaring_bitmap_get_cardinality(bitmap) * @sizeOf(u32));
 ///
 pub fn to_u32_array(r: Bitmap, out: []u32) void {
     _ = r;
@@ -737,7 +736,7 @@ pub fn to_u32_array(r: Bitmap, out: []u32) void {
 ///
 /// Caller is responsible to ensure that there is enough memory allocated, e.g.
 ///
-///     ans = malloc(get_cardinality(limit)/// sizeof(u32));
+///     ans = malloc(get_cardinality(limit)/// @sizeOf(u32));
 ///
 /// This function always returns `true`
 ///
@@ -771,7 +770,7 @@ pub fn remove_run_compression(r: *Bitmap) bool {
 ///
 pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
     var answer = false;
-    for (r.high_low_container.containers.items(.container), 0..) |c, i| {
+    for (r.high_low_container.kvs.items(.container), 0..) |c, i| {
         r.high_low_container.unshare_container_at_index(@intCast(i)); // TODO: this introduces extra cloning!
 
         const c1 = try c.convert_run_optimize(allocator);
@@ -813,16 +812,16 @@ pub fn shrink_to_fit(r: *Bitmap) usize {
 ///
 pub fn serialize(r: Bitmap, w: *Io.Writer) !usize {
     const portablesize = r.portable_size_in_bytes();
-    const cardinality = r.get_cardinality();
-    const sizeasarray = cardinality * @sizeOf(u32) + @sizeOf(u32);
+    const card = r.cardinality();
+    const sizeasarray = card * @sizeOf(u32) + @sizeOf(u32);
 
     if (portablesize < sizeasarray) {
         try w.writeByte(C.SERIALIZATION_CONTAINER);
         return r.portable_serialize(w) + 1;
     } else {
         try w.writeByte(C.SERIALIZATION_ARRAY_UINT32);
-        try w.writeInt(@TypeOf(cardinality), cardinality, .little);
-        try w.writeSliceEndian(u32, r.high_low_container.containers.items(.key), .little);
+        try w.writeInt(@TypeOf(card), card, .little);
+        try w.writeSliceEndian(u32, r.high_low_container.kvs.items(.key), .little);
         return 1 + sizeasarray;
     }
 }
@@ -843,7 +842,7 @@ pub fn deserialize(r: *Io.Reader) !Bitmap {
     const first_byte = try r.peekByte();
     // std.debug.print("deserialize first_byte {}\n", .{first_byte});
     if (first_byte == C.SERIALIZATION_ARRAY_UINT32) {
-        // This looks like a compressed set of uint32_t elements
+        // This looks like a compressed set of u32 elements
         const card = try r.takeInt(u32, .little);
         var bitmap: Bitmap = .{};
         var context: BulkContext = mem.zeroes(BulkContext);
@@ -1042,9 +1041,27 @@ pub fn portable_serialize(r: Bitmap, w: *Io.Writer, temp_allocator: mem.Allocato
 ///
 /// Returns number of bytes required to serialize bitmap using frozen format.
 ///
-pub fn frozen_size_in_bytes(r: Bitmap) usize {
-    _ = r;
-    unreachable; // TODO
+pub fn frozen_size_in_bytes(rb: Bitmap) usize {
+    const ra = &rb.high_low_container;
+    var num_bytes: usize = 0;
+    const slice = ra.kvs.slice();
+    for (slice.items(.container)) |c| {
+        num_bytes += switch (c.typecode) {
+            .bitset => root.BitsetContainer.SIZE_IN_BYTES,
+            .run => c.const_cast(.run).n_runs * @sizeOf(root.Rle16),
+            .array => c.const_cast(.array).cardinality * @sizeOf(u16),
+            else => unreachable,
+        };
+    }
+    num_bytes += (2 + 2 + 1) * ra.kvs.len; // keys, counts, typecodes
+    num_bytes += 4; // header
+    return num_bytes;
+}
+
+fn arena_alloc(T: type, arena: *[*]u8, count: usize) []align(1) T {
+    const size = @sizeOf(T) * count;
+    defer arena.* += size;
+    return @as([]align(1) T, @ptrCast(arena.*[0..size]))[0..count];
 }
 
 ///
@@ -1059,10 +1076,81 @@ pub fn frozen_size_in_bytes(r: Bitmap) usize {
 /// checksums so that, at deserialization, you can be confident
 /// that you are recovering the correct data.
 ///
-pub fn frozen_serialize(r: Bitmap, buf: []u8) void {
-    _ = r;
-    _ = buf;
-    unreachable; // TODO
+pub fn frozen_serialize(rb: Bitmap, buf: []u8) !void {
+    //
+    // Note: we do not require user to supply a specifically aligned buffer.
+    // Thus we have to use memcpy() everywhere.
+    //
+    const ra = &rb.high_low_container;
+
+    var bitset_zone_size: usize = 0;
+    var run_zone_size: usize = 0;
+    var array_zone_size: usize = 0;
+    const slice = ra.kvs.slice();
+    for (slice.items(.container)) |c| {
+        switch (c.typecode) {
+            .bitset => bitset_zone_size += root.BitsetContainer.SIZE_IN_WORDS,
+            .run => run_zone_size += c.const_cast(.run).n_runs,
+            .array => array_zone_size += c.const_cast(.array).cardinality,
+            .shared => unreachable,
+        }
+    }
+
+    var cur = buf.ptr;
+    var bitset_zone = arena_alloc(root.BitsetContainer.Word, &cur, bitset_zone_size).ptr;
+    var run_zone = arena_alloc(root.Rle16, &cur, run_zone_size).ptr;
+    var array_zone = arena_alloc(u16, &cur, array_zone_size).ptr;
+    const key_zone = arena_alloc(u16, &cur, ra.kvs.len);
+    const count_zone = arena_alloc(u16, &cur, ra.kvs.len);
+    const typecode_zone = arena_alloc(Typecode, &cur, ra.kvs.len);
+    const header_zone = arena_alloc(u32, &cur, 1);
+    assert(cur == buf.ptr + buf.len);
+    const fixedw = Io.Writer.fixed;
+    for (slice.items(.container), count_zone, typecode_zone) |c, *count, *typecode| {
+        // std.debug.print("c {f} typecode {}\n", .{ c, @intFromEnum(c.typecode) });
+        typecode.* = c.typecode;
+        count.* = @intCast(switch (c.typecode) {
+            .bitset => blk: {
+                const bc = c.const_cast(.bitset);
+                // std.debug.print("bc {}\n", .{bc.cardinality});
+                var w = fixedw(mem.sliceAsBytes(bitset_zone[0..root.BitsetContainer.SIZE_IN_WORDS]));
+                try w.writeSliceEndian(root.BitsetContainer.Word, bc.slice(), .little);
+                assert(w.unusedCapacityLen() == 0);
+                bitset_zone += root.BitsetContainer.SIZE_IN_WORDS;
+                break :blk if (bc.cardinality != C.BITSET_UNKNOWN_CARDINALITY)
+                    (bc.cardinality - 1)
+                else
+                    (bc.compute_cardinality() - 1);
+            },
+            .run => blk: {
+                const rc = c.const_cast(.run);
+                var w = fixedw(mem.sliceAsBytes(run_zone[0..rc.n_runs]));
+                try w.writeSliceEndian(root.Rle16, rc.slice(), .little);
+                assert(w.unusedCapacityLen() == 0);
+                run_zone += rc.n_runs;
+                break :blk rc.n_runs;
+            },
+            .array => blk: {
+                const ac = c.const_cast(.array);
+                var w = fixedw(mem.sliceAsBytes(array_zone[0..ac.cardinality]));
+                try w.writeSliceEndian(u16, ac.slice(), .little);
+                // std.debug.print("ac {} {any}\n", .{ ac.cardinality, ac.slice() });
+                assert(w.unusedCapacityLen() == 0);
+                array_zone += ac.cardinality;
+                break :blk ac.cardinality - 1;
+            },
+            else => unreachable,
+        });
+    }
+    var keysw = fixedw(mem.sliceAsBytes(key_zone[0..ra.kvs.len]));
+    try keysw.writeSliceEndian(u16, slice.items(.key), .little);
+    // std.debug.print("keys {any} {any}\n", .{ slice.items(.key), key_zone[0..ra.kvs.len] });
+    var headerw = fixedw(mem.sliceAsBytes(header_zone[0..1]));
+    try headerw.writeInt(
+        u32,
+        (@as(u32, @intCast(ra.kvs.len)) << 15) | @intFromEnum(types.Magic.FROZEN_COOKIE),
+        .little,
+    );
 }
 
 ///
@@ -1116,9 +1204,9 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
     const ra2 = &r2.high_low_container;
 
     if (false) {
-        if (ra1.containers.len != ra2.containers.len) return false;
-        const slice1 = ra1.containers.slice();
-        const slice2 = ra2.containers.slice();
+        if (ra1.kvs.len != ra2.kvs.len) return false;
+        const slice1 = ra1.kvs.slice();
+        const slice2 = ra2.kvs.slice();
         for (slice1.items(.key), slice2.items(.key)) |k1, k2|
             if (k1 != k2) return false;
 
@@ -1128,9 +1216,9 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
         return true;
     }
 
-    return ra1.containers.len == ra2.containers.len and eql: {
-        const slice1 = ra1.containers.slice();
-        const slice2 = ra2.containers.slice();
+    return ra1.kvs.len == ra2.kvs.len and eql: {
+        const slice1 = ra1.kvs.slice();
+        const slice2 = ra2.kvs.slice();
         break :eql for (slice1.items(.key), slice2.items(.key)) |k1, k2| {
             if (k1 != k2) break false;
         } else for (slice1.items(.container), slice2.items(.container)) |c1, c2| {
@@ -1328,7 +1416,7 @@ pub fn rank(r: Bitmap, x: u32) u64 {
 /// the values in `[begin .. end)` must be sorted in Ascending order;
 /// Caller is responsible to ensure that there is enough memory allocated, e.g.
 ///
-///     ans = malloc((end-begin)/// sizeof(u64));
+///     ans = malloc((end-begin)/// @sizeOf(u64));
 ///
 pub fn rank_many(r: Bitmap, begin: []const u32, end: []const u32, ans: []u64) void {
     _ = r;
@@ -1416,9 +1504,9 @@ pub fn internal_validate(r: Bitmap, reason: *[]const u8) bool {
 const Iterator32 = struct {
     // parent: Bitmap;        // Owner
     // const ROARING_CONTAINER_T *container;  // Current container
-    // uint8_t typecode;                      // Typecode of current container
+    // u8 typecode;                           // Typecode of current container
     // int32_t container_index;               // Current  ndex
-    // highbits: u32;                     // High 16 bits of the current value
+    // highbits: u32;                         // High 16 bits of the current value
     // container_iterator_t container_it;
 
     // current_value: u32;
@@ -1583,9 +1671,11 @@ const std = @import("std");
 const mem = std.mem;
 const assert = std.debug.assert;
 const Io = std.Io;
+const testing = std.testing;
 const root = @import("root.zig");
 const Array = root.Array;
 const Container = root.Container;
 const Typecode = root.Typecode;
 const misc = @import("misc.zig");
 const C = @import("constants.zig");
+const types = @import("types.zig");

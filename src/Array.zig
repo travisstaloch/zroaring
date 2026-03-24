@@ -1,14 +1,14 @@
 const Array = @This();
 
-containers: std.MultiArrayList(ContainerKV),
+kvs: std.MultiArrayList(ContainerKV),
 flags: std.EnumSet(Flag),
 
 pub const ContainerKV = struct { key: u16, container: Container };
 pub const Flag = enum { cow, frozen };
 
-/// u13 by default
+/// u13 by default.  smallest integer type which can hold DEFAULT_MAX_SIZE.
 pub const Cardinality = std.math.IntFittingRange(0, C.DEFAULT_MAX_SIZE);
-/// u16 by default
+/// u32 by default
 pub const Element = u32; // TODO use Element instead of u32 throughout
 pub const Element2 = @Type(.{ // u32
     .int = .{
@@ -20,28 +20,27 @@ pub const Element2 = @Type(.{ // u32
 pub const Block = [BLOCK_LEN]Element;
 pub const BLOCK_LEN = std.simd.suggestVectorLength(Element).?;
 pub const BLOCK_ALIGN = @alignOf(Block);
-pub const init: Array = .{ .containers = .{}, .flags = .initEmpty() };
+pub const init: Array = .{ .kvs = .{}, .flags = .initEmpty() };
 const Elements = std.ArrayListAligned(Element, .fromByteUnits(BLOCK_ALIGN));
 /// Containers with DEFAULT_MAX_SIZE or less integers should be arrays
 pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !Array {
     var new_ra: Array = .init;
     // Containers hold 64Ki elements, so 64Ki containers is enough to hold
     // `0x10000 * 0x10000` (all 2^32) elements
-    try new_ra.containers.setCapacity(allocator, @min(C.MAX_CONTAINERS, cap));
+    try new_ra.kvs.setCapacity(allocator, @min(C.MAX_CONTAINERS, cap));
     // std.debug.print("init_with_capacity({}) new_ra.containers.capacity {}\n", .{ cap, new_ra.containers.capacity });
     return new_ra;
 }
 
 fn clear_containers(ra: *Array, allocator: mem.Allocator) void {
-    for (0..ra.containers.len) |i| {
-        const c = ra.containers.items(.container)[i];
-        c.deinit(allocator);
+    for (0..ra.kvs.len) |i| {
+        ra.kvs.items(.container)[i].deinit(allocator);
     }
 }
 
 fn clear_without_containers(ra: *Array, allocator: mem.Allocator) void {
-    ra.containers.deinit(allocator);
-    ra.containers.len = 0;
+    ra.kvs.deinit(allocator);
+    ra.kvs.len = 0;
 }
 
 pub fn clear(ra: *Array, allocator: mem.Allocator) void {
@@ -51,10 +50,10 @@ pub fn clear(ra: *Array, allocator: mem.Allocator) void {
 
 pub fn deinit(ra: *Array, allocator: mem.Allocator) void {
     // std.debug.print("ra deinit() ra {any}\n", .{ra});
-    for (ra.containers.items(.container)) |c| {
+    for (ra.kvs.items(.container)) |c| {
         c.deinit(allocator);
     }
-    ra.containers.deinit(allocator);
+    ra.kvs.deinit(allocator);
 }
 
 ///
@@ -62,18 +61,18 @@ pub fn deinit(ra: *Array, allocator: mem.Allocator) void {
 /// copy if needed).
 ///
 pub fn unshare_container_at_index(ra: *Array, i: u16) void {
-    assert(i < ra.containers.len);
-    ra.containers.items(.container)[i] = ra.containers.items(.container)[i].get_writable_copy_if_shared();
+    assert(i < ra.kvs.len);
+    ra.kvs.items(.container)[i] = ra.kvs.items(.container)[i].get_writable_copy_if_shared();
 }
 pub fn extend_array(ra: *Array, allocator: mem.Allocator, k: i32) !void {
-    const desired_size = misc.cast(i32, ra.containers.len) + k;
+    const desired_size = misc.cast(i32, ra.kvs.len) + k;
     assert(desired_size <= C.MAX_CONTAINERS);
-    if (desired_size > ra.containers.capacity) {
-        const new_capacity: u32 = @intCast(@min(C.MAX_CONTAINERS, if (ra.containers.len < 1024)
+    if (desired_size > ra.kvs.capacity) {
+        const new_capacity: u32 = @intCast(@min(C.MAX_CONTAINERS, if (ra.kvs.len < 1024)
             2 * desired_size
         else
             @divFloor(5 * desired_size, 4)));
-        try ra.containers.setCapacity(allocator, new_capacity);
+        try ra.kvs.setCapacity(allocator, new_capacity);
     }
 }
 
@@ -81,22 +80,22 @@ pub fn insert_new_key_value_at(ra: *Array, allocator: mem.Allocator, i: u32, key
     // std.debug.print("insert_new_key_value_at i {} key {} len/cap {}/{}\n", .{ i, key, ra.containers.len, ra.containers.capacity });
     // std.debug.print("  keys1 {any}\n", .{ra.containers.items(.key)});
     try ra.extend_array(allocator, 1);
-    ra.containers.len += 1;
-    const containers = ra.containers.slice();
+    ra.kvs.len += 1;
+    const containers = ra.kvs.slice();
     // std.debug.print("  keys2 {any} cap {}\n", .{ containers.items(.key), containers.capacity });
-    if (i + 1 == ra.containers.len) { // append // TODO skip this branch, avoid overflow below
+    if (i + 1 == ra.kvs.len) { // append // TODO skip this branch, avoid overflow below
         containers.items(.key)[i] = key;
         containers.items(.container)[i] = c;
         return;
     }
     // May be an optimization opportunity with DIY memmove
     @memmove(
-        containers.items(.key)[i + 1 .. ra.containers.len - 1],
+        containers.items(.key)[i + 1 .. ra.kvs.len - 1],
         containers.items(.key)[i..],
     );
     containers.items(.key)[i] = key;
     @memmove(
-        containers.items(.container)[i + 1 .. ra.containers.len - 1],
+        containers.items(.container)[i + 1 .. ra.kvs.len - 1],
         containers.items(.container)[i..],
     );
     containers.items(.container)[i] = c;
@@ -104,33 +103,33 @@ pub fn insert_new_key_value_at(ra: *Array, allocator: mem.Allocator, i: u32, key
 }
 
 pub fn get_container_at_index(ra: Array, i: u16) Container {
-    return ra.containers.items(.container)[i];
+    return ra.kvs.items(.container)[i];
 }
 
 ///
 /// Get the index corresponding to a 16-bit key
 ///
 pub fn get_index(ra: Array, key: u16) i32 {
-    const keys = ra.containers.items(.key);
-    if (ra.containers.len == 0 or keys[ra.containers.len - 1] == key)
-        return @as(i32, @intCast(ra.containers.len)) - 1;
+    const keys = ra.kvs.items(.key);
+    if (ra.kvs.len == 0 or keys[ra.kvs.len - 1] == key)
+        return @as(i32, @intCast(ra.kvs.len)) - 1;
     return misc.binarySearch(keys, key);
 }
 
 pub fn get_cardinality(ra: Array) u64 {
     var ret: u64 = 0;
-    for (ra.containers.items(.container)) |c| ret += c.get_cardinality();
+    for (ra.kvs.items(.container)) |c| ret += c.get_cardinality();
     return ret;
 }
 
 pub fn set_container_at_index(ra: *Array, i: u32, c: Container) void {
-    assert(i < ra.containers.len);
-    ra.containers.items(.container)[i] = c;
+    assert(i < ra.kvs.len);
+    ra.kvs.items(.container)[i] = c;
 }
 
 /// This function is endian-sensitive.
 pub fn portable_serialize(ra: Array, w: *std.Io.Writer, temp_allocator: mem.Allocator) !usize {
-    const cslen: u32 = @intCast(ra.containers.len);
+    const cslen: u32 = @intCast(ra.kvs.len);
     if (cslen == 0) {
         try w.writeStruct(root.Cookie{
             .magic = .SERIAL_COOKIE_NO_RUNCONTAINER,
@@ -139,7 +138,7 @@ pub fn portable_serialize(ra: Array, w: *std.Io.Writer, temp_allocator: mem.Allo
         try w.writeInt(u32, 0, .little);
         return @sizeOf(u32) * 2;
     }
-    const slice = ra.containers.slice();
+    const slice = ra.kvs.slice();
     var startOffset: u32 = 0;
     var written_count: usize = 0;
     const hasrun = ra.has_run_container();
@@ -226,10 +225,10 @@ pub fn portable_deserialize(
     var answer = try init_with_capacity(allocator, size);
     errdefer answer.deinit(allocator);
     // std.debug.print("keyscards {any}\n", .{keyscards});
-    answer.containers.len = size;
+    answer.kvs.len = size;
     for (0..size) |k| {
         const key = keyscards[k * 2];
-        answer.containers.items(.key)[k] = key;
+        answer.kvs.items(.key)[k] = key;
     }
     // std.debug.print("answer {f}\n", .{answer});
 
@@ -254,20 +253,20 @@ pub fn portable_deserialize(
             c.* = try BitsetContainer.create(allocator);
             errdefer c.deinit(allocator);
             try c.read(r, thiscard);
-            answer.containers.items(.container)[k] = .init(c);
+            answer.kvs.items(.container)[k] = .init(c);
         } else if (isrun) {
             const n_runs = try r.takeInt(u16, .little);
             var c = try RunContainer.init_with_capacity(allocator, n_runs);
             errdefer c.deinit(allocator);
             _ = try c.read(allocator, n_runs, r);
-            answer.containers.items(.container)[k] = try .create_from_value(allocator, c);
+            answer.kvs.items(.container)[k] = try .create_from_value(allocator, c);
         } else {
             const c = try allocator.create(ArrayContainer);
             c.* = try ArrayContainer.init_with_capacity(allocator, thiscard);
             _ = try c.read(allocator, thiscard, r);
             // std.debug.print("ArrayContainer after read() {f}\n", .{c});
             assert(c.cardinality == thiscard);
-            answer.containers.items(.container)[k] = .init(c);
+            answer.kvs.items(.container)[k] = .init(c);
         }
     }
     return answer;
@@ -278,7 +277,7 @@ pub fn orderFn16(a: u16, b: u16) std.math.Order {
 }
 
 pub fn has_run_container(ra: Array) bool {
-    return for (ra.containers.items(.container)) |c| {
+    return for (ra.kvs.items(.container)) |c| {
         if (c.get_container_type() == .run)
             break true;
     } else false;
@@ -286,19 +285,19 @@ pub fn has_run_container(ra: Array) bool {
 
 pub fn portable_header_size(ra: Array) usize {
     if (ra.has_run_container()) {
-        if (ra.containers.len < C.NO_OFFSET_THRESHOLD) { // for small bitmaps, we omit the offsets
-            return 4 + (ra.containers.len + 7) / 8 + 4 * ra.containers.len;
+        if (ra.kvs.len < C.NO_OFFSET_THRESHOLD) { // for small bitmaps, we omit the offsets
+            return 4 + (ra.kvs.len + 7) / 8 + 4 * ra.kvs.len;
         }
-        return 4 + (ra.containers.len + 7) / 8 +
-            8 * ra.containers.len; // - 4 because we pack the size with the cookie
+        return 4 + (ra.kvs.len + 7) / 8 +
+            8 * ra.kvs.len; // - 4 because we pack the size with the cookie
     } else {
-        return 4 + 4 + 8 * ra.containers.len;
+        return 4 + 4 + 8 * ra.kvs.len;
     }
 }
 
 pub fn portable_size_in_bytes(ra: Array) usize {
     var count = ra.portable_header_size();
-    for (ra.containers.items(.container)) |c| {
+    for (ra.kvs.items(.container)) |c| {
         count += c.size_in_bytes();
     }
     return count;
@@ -310,8 +309,8 @@ pub fn replace_key_and_container_at_index(
     key: u16,
     c: Container,
 ) void {
-    assert(i < ra.containers.len);
-    const slice = ra.containers.slice();
+    assert(i < ra.kvs.len);
+    const slice = ra.kvs.slice();
     slice.items(.key)[i] = key;
     slice.items(.container)[i] = c;
 }
@@ -327,14 +326,14 @@ pub fn shift_tail(ra: *Array, allocator: mem.Allocator, count: u32, distance: i3
     // std.debug.print("ra.shift_tail({},{}) containers.len {} containers.capacity {}\n", .{ count, distance, ra.containers.len, ra.containers.capacity });
     if (distance > 0) {
         try ra.extend_array(allocator, distance);
-        ra.containers.len += @intCast(distance);
+        ra.kvs.len += @intCast(distance);
     }
     // std.debug.print("  containers.len {} containers.capacity {}\n", .{ ra.containers.len, ra.containers.capacity });
     if (count == 0) return;
-    const srcpos: i32 = @intCast(ra.containers.len - count);
+    const srcpos: i32 = @intCast(ra.kvs.len - count);
     const dstpos = srcpos + distance;
-    ra.containers.len += @intCast(distance);
-    const s = ra.containers.slice();
+    ra.kvs.len += @intCast(distance);
+    const s = ra.kvs.slice();
     @memmove(
         s.items(.key)[@intCast(dstpos)..][0..count],
         s.items(.key)[@intCast(srcpos)..][0..count],
@@ -346,8 +345,8 @@ pub fn shift_tail(ra: *Array, allocator: mem.Allocator, count: u32, distance: i3
 }
 
 pub fn format(ra: Array, w: *Io.Writer) !void {
-    try w.print("containers {}:\n", .{ra.containers.len});
-    for (ra.containers.items(.container)) |c| {
+    // try w.print("containers {}:\n", .{ra.kvs.len});
+    for (ra.kvs.items(.container)) |c| {
         try w.writeAll("  ");
         try c.format(w);
         try w.writeByte('\n');

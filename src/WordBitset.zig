@@ -19,13 +19,13 @@ pub fn WordBitset(options: struct {
         //                                                       example: MIN = 0
         //                                                                max = 65535
         //                                                               Word = u64
-        /// a integer type for MIN and max.
+        /// a integer type which can hold both MIN and MAX.
         pub const Value = std.math.IntFittingRange(options.MIN, options.MAX); //u16
-        /// positive difference between MIN and max
-        pub const MAX_DIFFERENCE = options.MAX - options.MIN; //                65535
-        const MAX_CARDINALITY = MAX_DIFFERENCE + 1; //                          65536
-        const ValueCardinality = std.math.IntFittingRange(0, MAX_DIFFERENCE); //u17
-        const Word = options.Word;
+        /// positive difference between MIN and MAX
+        pub const MAX_OFFSET = options.MAX - options.MIN; //                    65535
+        const MAX_CARDINALITY = MAX_OFFSET + 1; //                              65536
+        const ValueCardinality = std.math.IntFittingRange(0, MAX_OFFSET); //    u17
+        pub const Word = options.Word;
         const MIN = options.MIN;
         const MAX = options.MAX;
         const WORD_BITSIZE: usize = @typeInfo(Word).int.bits; //                64
@@ -37,9 +37,8 @@ pub fn WordBitset(options: struct {
         const WordsPtrAligned = [*]align(BLOCK_ALIGN) Word; //                  [*]align(32)u64
         const WordsSliceAligned = []align(BLOCK_ALIGN) Word;
         const WordIndex = std.math.Log2Int(Word); //                            u6
-
         // blocks
-        /// suggested vector length for `Word` or else largest suggested from `block_types`.
+        /// suggested vector length for `Word` or else largest suggested from `word_types`.
         const BLOCK_LEN = std.simd.suggestVectorLength(Word) orelse
             for (word_types) |T| {
                 if (std.simd.suggestVectorLength(T)) |len|
@@ -51,7 +50,6 @@ pub fn WordBitset(options: struct {
         const BLOCKS_COUNT = @divExact(SIZE_IN_WORDS_PADDED, BLOCK_LEN);
         const WORDS_PER_BLOCK = @divExact(SIZE_IN_WORDS_PADDED, BLOCKS_COUNT);
         const BlockMask = std.meta.Int(.unsigned, @sizeOf(Block) * 8);
-
         const Self = @This();
 
         pub fn init(words: WordsSliceAligned) Self {
@@ -70,18 +68,25 @@ pub fn WordBitset(options: struct {
         }
 
         pub fn create(allocator: mem.Allocator) !Self {
-            const words_slice = try allocator.alignedAlloc(Word, .fromByteUnits(BLOCK_ALIGN), SIZE_IN_WORDS_PADDED);
-            return init(words_slice[0..SIZE_IN_WORDS_PADDED]);
+            const words_slice = try allocator.alignedAlloc(
+                Word,
+                .fromByteUnits(BLOCK_ALIGN),
+                SIZE_IN_WORDS_PADDED,
+            );
+            return init(words_slice);
         }
 
         pub fn createBatch(allocator: mem.Allocator, values: []const Value) !Self {
-            const words_slice = try allocator.alignedAlloc(Word, .fromByteUnits(BLOCK_ALIGN), SIZE_IN_WORDS_PADDED);
-            return initBatch(words_slice[0..SIZE_IN_WORDS_PADDED], values);
+            const words_slice = try allocator.alignedAlloc(
+                Word,
+                .fromByteUnits(BLOCK_ALIGN),
+                SIZE_IN_WORDS_PADDED,
+            );
+            return initBatch(words_slice, values);
         }
 
-        pub fn size_in_bytes(b: Self) usize {
-            _ = b;
-            return @sizeOf(Word) * SIZE_IN_WORDS;
+        pub fn size_in_bytes(_: Self) usize {
+            return SIZE_IN_BYTES;
         }
 
         pub fn write(b: Self, w: *Io.Writer) !usize {
@@ -190,12 +195,13 @@ pub fn WordBitset(options: struct {
             words[endword] =
                 temp | (~word_zero) >> @intCast(((~start + 1) - lenminusone - 1) % 64);
         }
-
-        // fn calcCount(self: Self) VCount {
-        //     var count: VCount = 0;
-        //     for (self.words) |word| count += @intCast(@popCount(word));
-        //     return count;
-        // }
+        // TODO optimize like croaring
+        pub const compute_cardinality = compute_cardinality_naive;
+        pub fn compute_cardinality_naive(self: Self) u32 {
+            var count: u32 = 0;
+            for (self.slice()) |word| count += @intCast(@popCount(word));
+            return count;
+        }
 
         pub const Op = enum { @"|", @"&", @"&~", @"^" };
 
@@ -421,8 +427,8 @@ fn TestNs(MIN: comptime_int, MAX: comptime_int, Word: type) type {
             try testing.expectEqual(c.cardinality, 2);
         }
 
-        const va = MIN + B.MAX_DIFFERENCE / 8 - 1;
-        const vb = MIN + B.MAX_DIFFERENCE / 8;
+        const va = MIN + B.MAX_OFFSET / 8 - 1;
+        const vb = MIN + B.MAX_OFFSET / 8;
 
         const put = B.set;
         test put {
@@ -434,7 +440,7 @@ fn TestNs(MIN: comptime_int, MAX: comptime_int, Word: type) type {
         const unset = B.unset;
         test unset {
             var b: Builder = undefined;
-            const n = MIN + B.MAX_DIFFERENCE / 2;
+            const n = MIN + B.MAX_OFFSET / 2;
             var c = b.initBatch(&.{n});
             try testing.expect(!c.unset(n).contains(n));
         }
@@ -472,7 +478,7 @@ fn TestNs(MIN: comptime_int, MAX: comptime_int, Word: type) type {
         const clear = B.clear;
         test clear {
             var b: Builder = undefined;
-            var container = b.initBatch(&.{ MIN + 5, MIN + B.MAX_DIFFERENCE / 3, MIN + B.MAX_DIFFERENCE - 1 });
+            var container = b.initBatch(&.{ MIN + 5, MIN + B.MAX_OFFSET / 3, MIN + B.MAX_OFFSET - 1 });
             try testing.expectEqual(container.cardinality, 3);
             try testing.expectEqual(container.clear().cardinality, 0);
             try testing.expect(!container.contains(MIN + 5));
@@ -522,7 +528,7 @@ fn TestNs(MIN: comptime_int, MAX: comptime_int, Word: type) type {
             var b: Builder = undefined;
             var container = b.init();
             try testing.expect(container.isEmpty());
-            try testing.expect(!container.set(MIN + B.MAX_DIFFERENCE / 3).isEmpty());
+            try testing.expect(!container.set(MIN + B.MAX_OFFSET / 3).isEmpty());
         }
 
         const equals = B.equals;
@@ -540,17 +546,17 @@ fn TestNs(MIN: comptime_int, MAX: comptime_int, Word: type) type {
             var bsrc: Builder = undefined;
             var bdst: Builder = undefined;
             var dst = bdst.init();
-            _ = dst.copy(bsrc.initBatch(&.{ MIN + 5, MIN + B.MAX_DIFFERENCE / 3, MIN + B.MAX_DIFFERENCE - 1 }));
+            _ = dst.copy(bsrc.initBatch(&.{ MIN + 5, MIN + B.MAX_OFFSET / 3, MIN + B.MAX_OFFSET - 1 }));
             try testing.expect(dst.contains(MIN + 5));
-            try testing.expect(dst.contains(MIN + B.MAX_DIFFERENCE / 3));
-            try testing.expect(dst.contains(MIN + B.MAX_DIFFERENCE - 1));
+            try testing.expect(dst.contains(MIN + B.MAX_OFFSET / 3));
+            try testing.expect(dst.contains(MIN + B.MAX_OFFSET - 1));
             try testing.expectEqual(dst.cardinality, 3);
         }
 
         test "dense region" {
             var b: Builder = undefined;
             var container = b.init();
-            const n = @min(MAX + 1, MIN + B.MAX_DIFFERENCE / 9);
+            const n = @min(MAX + 1, MIN + B.MAX_OFFSET / 9);
             for (MIN..n) |i| _ = container.set(@intCast(i));
             try testing.expectEqual(n - MIN, @as(usize, container.cardinality));
             for (MIN..n) |i| try testing.expect(container.contains(@intCast(i)));
@@ -558,7 +564,7 @@ fn TestNs(MIN: comptime_int, MAX: comptime_int, Word: type) type {
 
         test "sparse region" {
             var b: Builder = undefined;
-            const vs = &.{ MIN, MIN + B.MAX_DIFFERENCE / 3, MIN + B.MAX_DIFFERENCE / 2, MIN + B.MAX_DIFFERENCE - 1 };
+            const vs = &.{ MIN, MIN + B.MAX_OFFSET / 3, MIN + B.MAX_OFFSET / 2, MIN + B.MAX_OFFSET - 1 };
             const container = b.initBatch(vs);
             try testing.expectEqual(4, container.cardinality);
             try testing.expect(container.containsBatch(vs));
@@ -567,7 +573,7 @@ fn TestNs(MIN: comptime_int, MAX: comptime_int, Word: type) type {
         test "alternating pattern" {
             var b: Builder = undefined;
             var container = b.init();
-            const n = @min(MAX, MIN + (B.MAX_DIFFERENCE - 1) / 8);
+            const n = @min(MAX, MIN + (B.MAX_OFFSET - 1) / 8);
             for (MIN..n) |i| {
                 if (i % 2 == 0) _ = container.set(@intCast(i));
             }

@@ -512,6 +512,7 @@ pub const RunContainer = struct {
         run.n_runs -= 1;
     }
 
+    /// returns a bool indicating whether the value was added
     pub fn add(run: *RunContainer, allocator: mem.Allocator, pos: u16) !bool {
         var index = misc.interleavedBinarySearch(run.slice(), pos);
         if (index >= 0) return false;
@@ -549,7 +550,7 @@ pub const RunContainer = struct {
         }
         if (index == -1) {
             // we may need to extend the first run
-            if (0 < run.n_runs) {
+            if (run.n_runs > 0) {
                 if (run.runs[0].value == pos + 1) {
                     run.runs[0].length = 1;
                     run.runs[0].value -= 1;

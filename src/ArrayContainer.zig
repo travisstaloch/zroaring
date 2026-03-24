@@ -3,9 +3,9 @@ array: [*]align(ALIGNMENT) u16,
 cardinality: u32,
 capacity: u32,
 
-pub const BLOCK_LEN_16 = std.simd.suggestVectorLength(u16).?;
-pub const Block_u16 = @Vector(BLOCK_LEN_16, u16);
-pub const ALIGNMENT = @alignOf(Block_u16);
+pub const BLOCK_LEN = std.simd.suggestVectorLength(u16).?;
+pub const Block = @Vector(BLOCK_LEN, u16);
+pub const ALIGNMENT = @alignOf(Block);
 pub const init: ArrayContainer = .{ .capacity = 0, .cardinality = 0, .array = undefined };
 
 pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !ArrayContainer {
@@ -22,8 +22,6 @@ pub fn init_range(allocator: mem.Allocator, min: u32, max: u32) !ArrayContainer 
     }
     return answer;
 }
-
-// TODO bounded api
 
 pub fn deinit(c: ArrayContainer, allocator: mem.Allocator) void {
     // std.debug.print("deinit sorted values capacity {}\n", .{c.capacity});
@@ -73,14 +71,13 @@ pub fn try_add(
     c: *ArrayContainer,
     allocator: mem.Allocator,
     value: u16,
-    /// max cardinality
-    max_card: u32,
+    max_cardinality: u32,
 ) !types.AddResult {
     assert(c.cardinality <= C.DEFAULT_MAX_SIZE);
     defer assert(c.cardinality <= C.DEFAULT_MAX_SIZE);
     const card = c.cardinality;
     // best case, we can append.
-    if ((card == 0 or value > c.array[card - 1]) and card < max_card) {
+    if ((card == 0 or value > c.array[card - 1]) and card < max_cardinality) {
         // std.debug.print("value {}\n", .{value});
         try c.append(allocator, value);
         return .added;
@@ -89,7 +86,7 @@ pub fn try_add(
     const loc = misc.binarySearch(c.array[0 .. card - 1], value);
     return if (loc >= 0)
         .already_present
-    else if (c.cardinality < max_card) blk: {
+    else if (c.cardinality < max_cardinality) blk: {
         if (c.full()) try c.grow(allocator, c.capacity + 1, true);
         const insert_idx: u32 = @intCast(-loc - 1);
         @memmove(
@@ -248,10 +245,10 @@ pub fn serialized_size_in_bytes(card: u32) u32 {
 
 pub const format = format2;
 pub fn format1(c: ArrayContainer, w: *Io.Writer) !void {
-    try w.print("cardinality/capacity {}/{}", .{ c.cardinality, c.capacity });
+    try w.print("cardinality {} capacity {}", .{ c.cardinality, c.capacity });
 }
 pub fn format2(c: ArrayContainer, w: *Io.Writer) !void {
-    try w.print("cardinality/capacity {}/{} values {any}", .{ c.cardinality, c.capacity, c.slice()[0..@min(10, c.cardinality)] });
+    try w.print("cardinality {} capacity {} values {any}", .{ c.cardinality, c.capacity, c.slice()[0..@min(10, c.cardinality)] });
 }
 
 const std = @import("std");
