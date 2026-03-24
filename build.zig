@@ -18,12 +18,13 @@ pub fn build(b: *std.Build) void {
     });
     const avx512 = b.option(bool, "avx512", "enable croaring avx512.  default false.") orelse false;
     tests.root_module.addIncludePath(b.path("src"));
-    tests.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
+    tests.root_module.addCSourceFile(.{ .file = b.path("src/c/roaring.c") });
     tests.root_module.addCMacro(if (avx512) "" else "CROARING_COMPILER_SUPPORTS_AVX512", "0");
-    tests.linkLibC();
+    tests.root_module.link_libc = true;
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
+    b.installArtifact(tests);
 
     const lib = b.addLibrary(.{ .root_module = mod, .name = "zroaring" });
     const docs = b.addInstallDirectory(.{
