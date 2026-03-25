@@ -8,11 +8,16 @@ pub const SERIALIZATION_ARRAY_UINT32 = 1;
 pub const SERIALIZATION_CONTAINER = 2;
 pub const NO_OFFSET_THRESHOLD = 4;
 pub const BITSET_UNKNOWN_CARDINALITY = std.math.maxInt(u32);
+pub const CONTAINER_SIZE_IN_BYTES = @sizeOf(root.ArrayContainer);
 
 comptime {
     assert(DEFAULT_MAX_SIZE == @divExact(MAX_CONTAINERS, 16));
     assert(MAX_CONTAINERS == 1 << 16);
+    assert(CONTAINER_SIZE_IN_BYTES == @sizeOf(root.BitsetContainer));
+    assert(CONTAINER_SIZE_IN_BYTES == @sizeOf(root.RunContainer));
+    assert(CONTAINER_SIZE_IN_BYTES == @sizeOf(root.SharedContainer));
 }
 
 const std = @import("std");
 const assert = std.debug.assert;
+const root = @import("root.zig");

@@ -32,7 +32,7 @@ pub const Container = packed struct(usize) {
                 ret.* = c;
                 return .init(ret);
             },
-            else => unreachable, // non container type
+            else => @compileError("non container type: " ++ @typeName(T)),
         };
     }
 

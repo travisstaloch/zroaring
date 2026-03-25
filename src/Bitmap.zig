@@ -335,9 +335,19 @@ pub fn is_frozen(r: Bitmap) bool {
 ///
 ///
 /// Frees the memory.
-///
 pub fn deinit(r: *Bitmap, allocator: mem.Allocator) void {
-    if (!r.is_frozen()) r.high_low_container.clear(allocator);
+    if (!r.is_frozen())
+        r.high_low_container.clear(allocator)
+    else { // free shared frozen memory region for kvs and containers
+        const kvs_capacity = r.high_low_container.kvs.capacity;
+        const fcs = r.counts_sizes();
+        const containers_storage_size = frozen_containers_storage_size(fcs.num_bitsets + fcs.num_arrays + fcs.num_runs);
+        const containers_and_kvs_zone = r.high_low_container.kvs.bytes - containers_storage_size;
+        const to_free: []align(32) u8 = @alignCast(
+            containers_and_kvs_zone[0 .. kvs_capacity + containers_storage_size],
+        );
+        allocator.free(to_free);
+    }
 }
 
 ///
@@ -391,7 +401,6 @@ pub fn add(r: *Bitmap, allocator: mem.Allocator, x: u32) !void {
 /// In order to exploit this optimization, the caller should attempt to keep
 /// values with the same "key" (high 16 bits of the value) as consecutive
 /// elements in `vals`
-///
 pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !void {
     if (vals.len == 0) return;
     const end = vals.ptr + vals.len;
@@ -473,7 +482,7 @@ fn containerptr_add(
             return c;
         }
     } else { // key not found
-        var new_ac: root.ArrayContainer = try .init_with_capacity(allocator, 1);
+        var new_ac: ArrayContainer = try .init_with_capacity(allocator, 1);
         errdefer new_ac.deinit(allocator);
         new_ac.append_assume_capacity(lb);
         // we can assume that it stays an array container
@@ -489,7 +498,6 @@ fn containerptr_add(
 ///
 /// Add value x
 /// Returns true if a new value was added, false if the value already existed.
-///
 pub fn add_checked(r: *Bitmap, x: u32) bool {
     _ = r;
     _ = x;
@@ -498,7 +506,6 @@ pub fn add_checked(r: *Bitmap, x: u32) bool {
 
 ///
 /// Add all values in range [min, max]
-///
 pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
     // std.debug.print("add_range_closed({},{})\n", .{ min, max });
     if (min > max) return;
@@ -551,7 +558,6 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
 const u32_max = std.math.maxInt(u32);
 ///
 /// Add all values in range [min, max)
-///
 pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u64, max: u64) !void {
     // std.debug.print("add_range({},{})\n", .{ min, max });
     if (max <= min or min > @as(u64, u32_max) + 1) {
@@ -562,7 +568,6 @@ pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u64, max: u64) !void
 
 ///
 /// Remove value x
-///
 pub fn remove(r: *Bitmap, x: u32) void {
     _ = r;
     _ = x;
@@ -571,7 +576,6 @@ pub fn remove(r: *Bitmap, x: u32) void {
 
 ///
 /// Remove all values in range [min, max]
-///
 pub fn remove_range_closed(r: *Bitmap, min: u32, max: u32) void {
     _ = r;
     _ = min;
@@ -581,7 +585,6 @@ pub fn remove_range_closed(r: *Bitmap, min: u32, max: u32) void {
 
 ///
 /// Remove all values in range [min, max)
-///
 pub fn remove_range(r: *Bitmap, min: u64, max: u64) void {
     if (max <= min or min > u32_max + 1) {
         return;
@@ -591,7 +594,6 @@ pub fn remove_range(r: *Bitmap, min: u64, max: u64) void {
 
 ///
 /// Remove multiple values
-///
 pub fn remove_many(r: *Bitmap, vals: []const u32) void {
     _ = r;
     _ = vals;
@@ -601,7 +603,6 @@ pub fn remove_many(r: *Bitmap, vals: []const u32) void {
 ///
 /// Remove value x
 /// Returns true if a new value was removed, false if the value was not existing.
-///
 pub fn remove_checked(r: *Bitmap, x: u32) bool {
     _ = r;
     _ = x;
@@ -610,7 +611,6 @@ pub fn remove_checked(r: *Bitmap, x: u32) bool {
 
 ///
 /// Check if value is present
-///
 pub fn contains(r: Bitmap, val: u32) bool {
     // For performance reasons, this function is and uses internal
     // functions directly.
@@ -629,7 +629,6 @@ pub fn contains(r: Bitmap, val: u32) bool {
 ///
 /// Check whether a range of values from range_start (included)
 /// to range_end (excluded) is present
-///
 pub fn contains_range(r: Bitmap, range_start: u64, range_end: u64) bool {
     _ = r;
     _ = range_start;
@@ -640,7 +639,6 @@ pub fn contains_range(r: Bitmap, range_start: u64, range_end: u64) bool {
 ///
 /// Check whether a range of values from range_start (included)
 /// to range_end (included) is present
-///
 pub fn contains_range_closed(r: Bitmap, range_start: u32, range_end: u32) bool {
     _ = r;
     _ = range_start;
@@ -662,7 +660,6 @@ pub fn contains_range_closed(r: Bitmap, range_start: u32, range_end: u32) bool {
 ///
 /// In order to exploit this optimization, the caller should call this function
 /// with values with the same "key" (high 16 bits of the value) consecutively.
-///
 pub fn contains_bulk(r: Bitmap, context: BulkContext, val: u32) bool {
     _ = r;
     _ = context;
@@ -672,7 +669,6 @@ pub fn contains_bulk(r: Bitmap, context: BulkContext, val: u32) bool {
 
 ///
 /// Get the cardinality of the bitmap (number of elements).
-///
 pub fn cardinality(r: Bitmap) u64 {
     var card: u64 = 0;
     for (r.high_low_container.kvs.items(.container)) |c| {
@@ -684,7 +680,6 @@ pub fn cardinality(r: Bitmap) u64 {
 
 ///
 /// Returns the number of elements in the range [range_start, range_end).
-///
 pub fn range_cardinality(r: Bitmap, range_start: u64, range_end: u64) u64 {
     _ = r;
     _ = range_start;
@@ -694,7 +689,6 @@ pub fn range_cardinality(r: Bitmap, range_start: u64, range_end: u64) u64 {
 
 ///
 /// Returns the number of elements in the range [range_start, range_end].
-///
 pub fn range_cardinality_closed(r: Bitmap, range_start: u32, range_end: u32) u64 {
     _ = r;
     _ = range_start;
@@ -703,7 +697,6 @@ pub fn range_cardinality_closed(r: Bitmap, range_start: u32, range_end: u32) u64
 }
 ///
 /// Returns true if the bitmap is empty (cardinality is zero).
-///
 pub fn is_empty(r: Bitmap) bool {
     return r.high_low_container.kvs.len == 0;
 }
@@ -712,7 +705,6 @@ pub fn is_empty(r: Bitmap) bool {
 /// Empties the bitmap.  It will have no auxiliary allocations (so if the bitmap
 /// was initialized in client memory via init(), then a call to
 /// clear() would be enough to "free" it)
-///
 pub fn clear(r: *Bitmap) void {
     _ = r;
     unreachable; // TODO
@@ -723,7 +715,6 @@ pub fn clear(r: *Bitmap) void {
 /// Caller is responsible to ensure that there is enough memory allocated, e.g.
 ///
 ///     ans = malloc(roaring_bitmap_get_cardinality(bitmap) * @sizeOf(u32));
-///
 pub fn to_u32_array(r: Bitmap, out: []u32) void {
     _ = r;
     _ = out;
@@ -743,7 +734,6 @@ pub fn to_u32_array(r: Bitmap, out: []u32) void {
 /// For more control, see `iterator32_skip` and
 /// `iterator32_read`, which can be used to e.g. tell how many
 /// values were actually read.
-///
 pub fn range_uint32_array(r: Bitmap, offset: usize, limit: usize, ans: []u32) bool {
     _ = r;
     _ = offset;
@@ -755,7 +745,6 @@ pub fn range_uint32_array(r: Bitmap, offset: usize, limit: usize, ans: []u32) bo
 ///
 /// Remove run-length encoding even when it is more space efficient.
 /// Return whether a change was applied.
-///
 pub fn remove_run_compression(r: *Bitmap) bool {
     _ = r;
     unreachable; // TODO
@@ -767,7 +756,6 @@ pub fn remove_run_compression(r: *Bitmap) bool {
 ///
 /// Returns true if the result has at least one run container.
 /// Additional savings might be possible by calling `shrinkToFit()`.
-///
 pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
     var answer = false;
     for (r.high_low_container.kvs.items(.container), 0..) |c, i| {
@@ -786,7 +774,6 @@ pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
 ///
 /// If needed, reallocate memory to shrink the memory usage.
 /// Returns the number of bytes saved.
-///
 pub fn shrink_to_fit(r: *Bitmap) usize {
     _ = r;
     unreachable; // TODO
@@ -809,7 +796,6 @@ pub fn shrink_to_fit(r: *Bitmap) usize {
 /// When serializing data to a file, we recommend that you also use
 /// checksums so that, at deserialization, you can be confident
 /// that you are recovering the correct data.
-///
 pub fn serialize(r: Bitmap, w: *Io.Writer) !usize {
     const portablesize = r.portable_size_in_bytes();
     const card = r.cardinality();
@@ -837,7 +823,6 @@ pub fn serialize(r: Bitmap, w: *Io.Writer) !usize {
 /// compatible with little-endian systems.
 ///
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn deserialize(r: *Io.Reader) !Bitmap {
     const first_byte = try r.peekByte();
     // std.debug.print("deserialize first_byte {}\n", .{first_byte});
@@ -874,7 +859,6 @@ pub fn deserialize(r: *Io.Reader) !Bitmap {
 ///
 /// How many bytes are required to serialize this bitmap (NOT compatible
 /// with Java and Go versions)
-///
 pub fn size_in_bytes(r: Bitmap) usize {
     _ = r;
     unreachable; // TODO
@@ -896,7 +880,6 @@ pub fn size_in_bytes(r: Bitmap) usize {
 /// compatible with little-endian systems.
 ///
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn portable_deserialize(allocator: mem.Allocator, r: *Io.Reader) !Bitmap {
     var arena: std.heap.ArenaAllocator = .init(allocator);
     defer arena.deinit();
@@ -940,7 +923,6 @@ pub fn portable_deserialize(allocator: mem.Allocator, r: *Io.Reader) !Bitmap {
 /// compatible with little-endian systems.
 ///
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn portable_deserialize_safe(allocator: mem.Allocator, r: *Io.Reader) !Bitmap {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -972,7 +954,6 @@ pub fn portable_deserialize_safe(allocator: mem.Allocator, r: *Io.Reader) !Bitma
 /// compatible with little-endian systems.
 ///
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn portable_deserialize_frozen(buf: []const u8) *Bitmap {
     _ = buf;
     unreachable; // TODO
@@ -984,7 +965,6 @@ pub fn portable_deserialize_frozen(buf: []const u8) *Bitmap {
 ///
 /// This is meant to be compatible with the Java and Go versions:
 /// https://github.com/RoaringBitmap/RoaringFormatSpec
-///
 pub fn portable_deserialize_size(buf: []const u8) usize {
     _ = buf;
     unreachable; // TODO
@@ -995,7 +975,6 @@ pub fn portable_deserialize_size(buf: []const u8) usize {
 ///
 /// This is meant to be compatible with the Java and Go versions:
 /// https://github.com/RoaringBitmap/RoaringFormatSpec
-///
 pub fn portable_size_in_bytes(r: Bitmap) usize {
     return r.high_low_container.portable_size_in_bytes();
 }
@@ -1017,7 +996,6 @@ pub fn portable_size_in_bytes(r: Bitmap) usize {
 /// When serializing data to a file, we recommend that you also use
 /// checksums so that, at deserialization, you can be confident
 /// that you are recovering the correct data.
-///
 pub fn portable_serialize(r: Bitmap, w: *Io.Writer, temp_allocator: mem.Allocator) !usize {
     return try r.high_low_container.portable_serialize(w, temp_allocator);
 }
@@ -1040,14 +1018,13 @@ pub fn portable_serialize(r: Bitmap, w: *Io.Writer, temp_allocator: mem.Allocato
 ///
 ///
 /// Returns number of bytes required to serialize bitmap using frozen format.
-///
 pub fn frozen_size_in_bytes(rb: Bitmap) usize {
     const ra = &rb.high_low_container;
     var num_bytes: usize = 0;
     const slice = ra.kvs.slice();
     for (slice.items(.container)) |c| {
         num_bytes += switch (c.typecode) {
-            .bitset => root.BitsetContainer.SIZE_IN_BYTES,
+            .bitset => BitsetContainer.SIZE_IN_BYTES,
             .run => c.const_cast(.run).n_runs * @sizeOf(root.Rle16),
             .array => c.const_cast(.array).cardinality * @sizeOf(u16),
             else => unreachable,
@@ -1076,6 +1053,7 @@ fn arena_alloc(T: type, arena: *[*]u8, count: usize) []align(1) T {
 /// checksums so that, at deserialization, you can be confident
 /// that you are recovering the correct data.
 ///
+// TODO maybe require an aligned buffer here which can then be passed to frozen_view()
 pub fn frozen_serialize(rb: Bitmap, buf: []u8) !void {
     //
     // Note: we do not require user to supply a specifically aligned buffer.
@@ -1089,34 +1067,31 @@ pub fn frozen_serialize(rb: Bitmap, buf: []u8) !void {
     const slice = ra.kvs.slice();
     for (slice.items(.container)) |c| {
         switch (c.typecode) {
-            .bitset => bitset_zone_size += root.BitsetContainer.SIZE_IN_WORDS,
-            .run => run_zone_size += c.const_cast(.run).n_runs,
+            .bitset => bitset_zone_size += BitsetContainer.SIZE_IN_WORDS,
             .array => array_zone_size += c.const_cast(.array).cardinality,
+            .run => run_zone_size += c.const_cast(.run).n_runs,
             .shared => unreachable,
         }
     }
 
     var cur = buf.ptr;
-    var bitset_zone = arena_alloc(root.BitsetContainer.Word, &cur, bitset_zone_size).ptr;
-    var run_zone = arena_alloc(root.Rle16, &cur, run_zone_size).ptr;
-    var array_zone = arena_alloc(u16, &cur, array_zone_size).ptr;
+    const bitset_zone_s = arena_alloc(BitsetContainer.Word, &cur, bitset_zone_size);
+    var bitset_zone = fixedWriter(mem.sliceAsBytes(bitset_zone_s));
+    var run_zone = fixedWriter(mem.sliceAsBytes(arena_alloc(root.Rle16, &cur, run_zone_size)));
+    var array_zone = fixedWriter(mem.sliceAsBytes(arena_alloc(u16, &cur, array_zone_size)));
     const key_zone = arena_alloc(u16, &cur, ra.kvs.len);
     const count_zone = arena_alloc(u16, &cur, ra.kvs.len);
     const typecode_zone = arena_alloc(Typecode, &cur, ra.kvs.len);
     const header_zone = arena_alloc(u32, &cur, 1);
     assert(cur == buf.ptr + buf.len);
-    const fixedw = Io.Writer.fixed;
-    for (slice.items(.container), count_zone, typecode_zone) |c, *count, *typecode| {
+    for (ra.kvs.items(.container), count_zone, typecode_zone) |c, *count, *typecode| {
         // std.debug.print("c {f} typecode {}\n", .{ c, @intFromEnum(c.typecode) });
         typecode.* = c.typecode;
         count.* = @intCast(switch (c.typecode) {
             .bitset => blk: {
                 const bc = c.const_cast(.bitset);
                 // std.debug.print("bc {}\n", .{bc.cardinality});
-                var w = fixedw(mem.sliceAsBytes(bitset_zone[0..root.BitsetContainer.SIZE_IN_WORDS]));
-                try w.writeSliceEndian(root.BitsetContainer.Word, bc.slice(), .little);
-                assert(w.unusedCapacityLen() == 0);
-                bitset_zone += root.BitsetContainer.SIZE_IN_WORDS;
+                try bitset_zone.writeSliceEndian(BitsetContainer.Word, bc.slice(), .little);
                 break :blk if (bc.cardinality != C.BITSET_UNKNOWN_CARDINALITY)
                     (bc.cardinality - 1)
                 else
@@ -1124,28 +1099,21 @@ pub fn frozen_serialize(rb: Bitmap, buf: []u8) !void {
             },
             .run => blk: {
                 const rc = c.const_cast(.run);
-                var w = fixedw(mem.sliceAsBytes(run_zone[0..rc.n_runs]));
-                try w.writeSliceEndian(root.Rle16, rc.slice(), .little);
-                assert(w.unusedCapacityLen() == 0);
-                run_zone += rc.n_runs;
+                try run_zone.writeSliceEndian(root.Rle16, rc.slice(), .little);
                 break :blk rc.n_runs;
             },
             .array => blk: {
                 const ac = c.const_cast(.array);
-                var w = fixedw(mem.sliceAsBytes(array_zone[0..ac.cardinality]));
-                try w.writeSliceEndian(u16, ac.slice(), .little);
-                // std.debug.print("ac {} {any}\n", .{ ac.cardinality, ac.slice() });
-                assert(w.unusedCapacityLen() == 0);
-                array_zone += ac.cardinality;
+                try array_zone.writeSliceEndian(u16, ac.slice(), .little);
                 break :blk ac.cardinality - 1;
             },
             else => unreachable,
         });
     }
-    var keysw = fixedw(mem.sliceAsBytes(key_zone[0..ra.kvs.len]));
+    var keysw = fixedWriter(mem.sliceAsBytes(key_zone[0..ra.kvs.len]));
     try keysw.writeSliceEndian(u16, slice.items(.key), .little);
     // std.debug.print("keys {any} {any}\n", .{ slice.items(.key), key_zone[0..ra.kvs.len] });
-    var headerw = fixedw(mem.sliceAsBytes(header_zone[0..1]));
+    var headerw = fixedWriter(mem.sliceAsBytes(header_zone[0..1]));
     try headerw.writeInt(
         u32,
         (@as(u32, @intCast(ra.kvs.len)) << 15) | @intFromEnum(types.Magic.FROZEN_COOKIE),
@@ -1153,8 +1121,72 @@ pub fn frozen_serialize(rb: Bitmap, buf: []u8) !void {
     );
 }
 
+/// the size in bytes needed to store the given number of containers.
+pub fn frozen_containers_storage_size(num_containers: usize) usize {
+    return num_containers * C.CONTAINER_SIZE_IN_BYTES;
+}
+
+const FrozenCounts = struct {
+    bitset_size: usize, // sizes in bytes
+    array_size: usize,
+    run_size: usize,
+    num_bitsets: u32, // container counts
+    num_arrays: u32,
+    num_runs: u32,
+};
+
+fn frozen_counts_sizes(typecodes: []const Typecode, counts: []const u16) FrozenCounts {
+    var ret = mem.zeroes(FrozenCounts);
+    for (typecodes, counts) |typecode, count| {
+        // std.debug.print("typecode {t}\n", .{typecodes[i]});
+        switch (typecode) {
+            .bitset => {
+                ret.num_bitsets += 1;
+                ret.bitset_size += BitsetContainer.SIZE_IN_BYTES;
+            },
+            .run => {
+                ret.num_runs += 1;
+                ret.run_size += @as(u32, count) * @sizeOf(root.Rle16);
+            },
+            .array => {
+                ret.num_arrays += 1;
+                ret.array_size += @as(u32, count + 1) * @sizeOf(u16);
+            },
+            .shared => unreachable,
+        }
+        // std.debug.print(
+        //     "\n  length {}\n  bitset_zone_size {}\n  run_zone_size {}\n  array_zone_size {}\n",
+        //     .{ len, bitset_zone_size, run_zone_size, array_zone_size },
+        // );
+    }
+    return ret;
+}
+
+fn counts_sizes(rb: Bitmap) FrozenCounts {
+    var ret = mem.zeroes(FrozenCounts);
+    for (rb.high_low_container.kvs.items(.container)) |c| {
+        // std.debug.print("typecode {t}\n", .{typecodes[i]});
+        switch (c.typecode) {
+            .bitset => {
+                ret.num_bitsets += 1;
+                ret.bitset_size += BitsetContainer.SIZE_IN_BYTES;
+            },
+            .run => {
+                ret.num_runs += 1;
+                ret.run_size += c.const_cast(.run).n_runs * @sizeOf(root.Rle16);
+            },
+            .array => {
+                ret.num_arrays += 1;
+                ret.array_size += c.const_cast(.array).cardinality * @sizeOf(u16);
+            },
+            .shared => unreachable,
+        }
+    }
+    return ret;
+}
+
 ///
-/// Creates constant bitmap that is a view of a given buffer.
+/// Creates constant bitmap that is a view of a `serialized_bytes`.
 /// Buffer data should have been written by `frozen_serialize()`
 /// Its beginning must also be aligned by 32 bytes.
 /// Length must be equal exactly to `frozen_size_in_bytes()`.
@@ -1167,11 +1199,106 @@ pub fn frozen_serialize(rb: Bitmap, buf: []u8) !void {
 /// This function is endian-sensitive. If you have a big-endian system (e.g., a
 /// mainframe IBM s390x), the data format is going to be big-endian and not
 /// compatible with little-endian systems.
-///
-pub fn frozen_view(r: Bitmap, buf: []const u8) void {
-    _ = r;
-    _ = buf;
-    unreachable; // TODO
+pub fn frozen_view(
+    allocator: std.mem.Allocator,
+    serialized_bytes: []align(32) const u8,
+) !Bitmap {
+    const buf = serialized_bytes;
+    const len = buf.len;
+
+    // std.debug.print("frozen_view() {*} {}\n", .{ buf.ptr, len });
+    if (len < 4) return error.BufferLength;
+    const headerstart = buf.ptr + len - 4;
+    const header = mem.readInt(u32, headerstart[0..4], .little);
+    const num_containers = (header >> 15);
+    const magic: types.Magic = @enumFromInt(header & 0x7fff);
+    // std.debug.print("header {}/{x} magici {}\n", .{ header, header, magici });
+    // std.debug.print("magic {t} num_containers {}\n", .{ magic, num_containers });
+    if (magic != .FROZEN_COOKIE) return error.Cookie;
+    if (num_containers == 0) return .{};
+    if (len < 4 + @as(usize, num_containers) * (1 + 2 + 2))
+        return error.BufferLength; // no room in buffer for typecodes, counts and keys
+    const keys = mem.bytesAsSlice(u16, (headerstart - num_containers * 5)[0 .. num_containers * 2]);
+    const counts: []const u16 = @alignCast(mem.bytesAsSlice(u16, (headerstart - num_containers * 3)[0 .. num_containers * 2]));
+    const typecodes = mem.bytesAsSlice(Typecode, (headerstart - num_containers * 1)[0..num_containers]);
+    // std.debug.print("{any} {any} {any}\n", .{ typecodes, counts, keys });
+
+    // {bitset,array,run}_zone
+    const fcs = frozen_counts_sizes(typecodes, counts);
+    if (len != fcs.bitset_size + fcs.run_size + fcs.array_size + 5 * num_containers + 4)
+        return error.BufferLength;
+
+    // read zones
+    var bitset_rzone = buf.ptr;
+    var run_rzone = buf.ptr + fcs.bitset_size;
+    var array_rzone = run_rzone + fcs.run_size;
+
+    // allocate shared frozen memory region for kvs and containers
+    const kvs_capacity = std.MultiArrayList(Array.ContainerKV).capacityInBytes(num_containers);
+    const containers_storage_size = frozen_containers_storage_size(fcs.num_bitsets + fcs.num_arrays + fcs.num_runs);
+    const containers_and_kvs_zone = try allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(ArrayContainer.ALIGNMENT),
+        kvs_capacity + containers_storage_size,
+    );
+    errdefer allocator.free(containers_and_kvs_zone);
+    const container_region = containers_and_kvs_zone[0..containers_storage_size];
+
+    var bitset_zone: [*]BitsetContainer = @ptrCast(container_region);
+    var array_zone: [*]ArrayContainer = @ptrCast(bitset_zone + fcs.num_bitsets);
+    var run_zone: [*]RunContainer = @ptrCast(array_zone + fcs.num_arrays);
+
+    var rb: Bitmap = .{};
+    rb.high_low_container.flags.insert(.frozen);
+    assert(mem.isAligned(containers_storage_size, 8));
+    rb.high_low_container.kvs = .{
+        .bytes = @alignCast(containers_and_kvs_zone.ptr + containers_storage_size),
+        .len = num_containers,
+        .capacity = kvs_capacity,
+    };
+    const slice = rb.high_low_container.kvs.slice();
+    @memcpy(slice.items(.key), keys);
+    for (slice.items(.container), typecodes, counts) |*c, typecode, count| {
+        const thiscard: u32 = count;
+        switch (typecode) {
+            .bitset => {
+                const bitset = arena_alloc(
+                    BitsetContainer.Word,
+                    @ptrCast(&bitset_rzone),
+                    BitsetContainer.SIZE_IN_WORDS,
+                );
+                bitset_zone[0] = .{
+                    .words = @alignCast(bitset.ptr),
+                    .cardinality = thiscard,
+                };
+                c.* = .init(&bitset_zone[0]);
+                bitset_zone += 1;
+            },
+            .array => {
+                const array = arena_alloc(u16, @ptrCast(&array_rzone), thiscard);
+                // std.debug.print("array {any}\n", .{array});
+                array_zone[0] = .{
+                    .array = @alignCast(array.ptr),
+                    .cardinality = thiscard + 1,
+                    .capacity = thiscard + 1,
+                };
+                c.* = .init(&array_zone[0]);
+                array_zone += 1;
+            },
+            .run => {
+                const run = arena_alloc(root.Rle16, @ptrCast(&run_rzone), thiscard);
+                run_zone[0] = .{
+                    .runs = @alignCast(run.ptr),
+                    .n_runs = thiscard,
+                    .capacity = thiscard,
+                };
+                c.* = .init(&run_zone[0]);
+                run_zone += 1;
+            },
+            .shared => unreachable,
+        }
+    }
+    return rb;
 }
 
 ///
@@ -1660,11 +1787,11 @@ pub fn format(b: Bitmap, w: *Io.Writer) !void {
 
 test Bitmap { // README test. don't forget to update README if modified
     const zroaring = @This(); // @import("zroaring");
-    var zr: zroaring.Bitmap = .{};
-    defer zr.deinit(std.testing.allocator);
-    try zr.add(std.testing.allocator, 1);
-    try std.testing.expect(zr.contains(1));
-    try std.testing.expect(!zr.contains(2));
+    var bitmap: zroaring.Bitmap = .{};
+    defer bitmap.deinit(std.testing.allocator);
+    try bitmap.add(std.testing.allocator, 1);
+    try std.testing.expect(bitmap.contains(1));
+    try std.testing.expect(!bitmap.contains(2));
 }
 
 const std = @import("std");
@@ -1672,10 +1799,14 @@ const mem = std.mem;
 const assert = std.debug.assert;
 const Io = std.Io;
 const testing = std.testing;
+const fixedWriter = Io.Writer.fixed;
 const root = @import("root.zig");
 const Array = root.Array;
 const Container = root.Container;
 const Typecode = root.Typecode;
+const ArrayContainer = root.ArrayContainer;
+const BitsetContainer = root.BitsetContainer;
+const RunContainer = root.RunContainer;
 const misc = @import("misc.zig");
 const C = @import("constants.zig");
 const types = @import("types.zig");

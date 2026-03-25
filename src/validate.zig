@@ -135,11 +135,14 @@ fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []
     defer zr.deinit(allocator);
     try zr.add_many(allocator, values);
     if (run_optimize) _ = try zr.run_optimize(allocator);
-    const zr_frozen_buf = try allocator.alloc(u8, zr.frozen_size_in_bytes());
+    const zr_frozen_buf = try allocator.alignedAlloc(u8, .@"32", zr.frozen_size_in_bytes());
     defer allocator.free(zr_frozen_buf);
     try zr.frozen_serialize(zr_frozen_buf);
-
     try testing.expectEqualSlices(u8, cr_frozen_buf, zr_frozen_buf);
+
+    var zr2 = try Bitmap.frozen_view(allocator, zr_frozen_buf);
+    defer zr2.deinit(allocator);
+    for (values) |v| try testing.expect(zr2.contains(v));
 }
 
 fn validate() !void {
@@ -274,8 +277,4 @@ const mem = std.mem;
 const testing = std.testing;
 const zroaring = @import("root.zig");
 const Bitmap = zroaring.Bitmap;
-const c = @cImport({
-    // @cDefine("CROARING_COMPILER_SUPPORTS_AVX512", "0");
-    @cDefine("CROARING_ATOMIC_IMPL", "1");
-    @cInclude("c/roaring.h");
-});
+const c = @import("c.zig").root;

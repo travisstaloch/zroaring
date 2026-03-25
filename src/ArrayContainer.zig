@@ -24,7 +24,7 @@ pub fn init_range(allocator: mem.Allocator, min: u32, max: u32) !ArrayContainer 
 }
 
 pub fn deinit(c: ArrayContainer, allocator: mem.Allocator) void {
-    // std.debug.print("deinit sorted values capacity {}\n", .{c.capacity});
+    // std.debug.print("ArrayContainer.deinit {} {}\n", .{ c.cardinality, c.capacity });
     if (c.capacity == 0) return;
     allocator.free(c.array[0..c.capacity]);
 }
@@ -187,7 +187,7 @@ pub fn equals(c1: ArrayContainer, c2: *const ArrayContainer) bool {
 
 /// binary search with fallback to linear search for short ranges
 pub fn contains(c: ArrayContainer, pos: u16) bool {
-    // std.debug.print("ArrayContainer.contains({}) cardinality {} slice {any}\n", .{ pos, c.cardinality, c.slice() });
+    // std.debug.print("ArrayContainer.contains({}) cardinality {} slice {any}\n", .{ pos, c.cardinality, c.slice()[0..@min(10, c.cardinality)] });
     var low: i32 = 0;
     const carr = c.slice();
     var high = @as(i32, @intCast(c.cardinality)) - 1;
