@@ -64,6 +64,7 @@ pub fn unshare_container_at_index(ra: *Array, i: u16) void {
     assert(i < ra.kvs.len);
     ra.kvs.items(.container)[i] = ra.kvs.items(.container)[i].get_writable_copy_if_shared();
 }
+
 pub fn extend_array(ra: *Array, allocator: mem.Allocator, k: i32) !void {
     const desired_size = misc.cast(i32, ra.kvs.len) + k;
     assert(desired_size <= C.MAX_CONTAINERS);
@@ -80,26 +81,9 @@ pub fn insert_new_key_value_at(ra: *Array, allocator: mem.Allocator, i: u32, key
     // std.debug.print("insert_new_key_value_at i {} key {} len/cap {}/{}\n", .{ i, key, ra.containers.len, ra.containers.capacity });
     // std.debug.print("  keys1 {any}\n", .{ra.containers.items(.key)});
     try ra.extend_array(allocator, 1);
-    ra.kvs.len += 1;
-    const containers = ra.kvs.slice();
-    // std.debug.print("  keys2 {any} cap {}\n", .{ containers.items(.key), containers.capacity });
-    if (i + 1 == ra.kvs.len) { // append // TODO skip this branch, avoid overflow below
-        containers.items(.key)[i] = key;
-        containers.items(.container)[i] = c;
-        return;
-    }
+
     // May be an optimization opportunity with DIY memmove
-    @memmove(
-        containers.items(.key)[i + 1 .. ra.kvs.len - 1],
-        containers.items(.key)[i..],
-    );
-    containers.items(.key)[i] = key;
-    @memmove(
-        containers.items(.container)[i + 1 .. ra.kvs.len - 1],
-        containers.items(.container)[i..],
-    );
-    containers.items(.container)[i] = c;
-    // std.debug.print("  keys3 {any}\n", .{ra.containers.items(.key)});
+    ra.kvs.insertAssumeCapacity(i, .{ .key = key, .container = c });
 }
 
 pub fn get_container_at_index(ra: Array, i: u16) Container {
