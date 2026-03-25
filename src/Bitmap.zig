@@ -9,7 +9,6 @@ high_low_container: Array = .init,
 /// Returns NULL if the allocation fails.
 /// Capacity is a performance hint for how many "containers" the data will need.
 /// Client is responsible for calling `free()`.
-///
 pub fn create_with_capacity(cap: u32) *Bitmap {
     _ = cap;
     unreachable; // TODO
@@ -19,7 +18,6 @@ pub fn create_with_capacity(cap: u32) *Bitmap {
 /// Dynamically allocates a new bitmap (initially empty).
 /// Returns NULL if the allocation fails.
 /// Client is responsible for calling `free()`.
-///
 pub fn create() Bitmap {
     return create_with_capacity(0);
 }
@@ -39,7 +37,6 @@ fn init_with_capacity(r: *Bitmap, cap: u32) bool {
 /// Initialize a roaring bitmap structure in memory controlled by client.
 /// The bitmap will be in a "clear" state, with no auxiliary allocations.
 /// Since this performs no allocations, the function will not fail.
-///
 pub fn init_cleared(r: *Bitmap) void {
     init_with_capacity(r, 0);
 }
@@ -48,7 +45,6 @@ pub fn init_cleared(r: *Bitmap) void {
 /// Add all the values between min (included) and max (excluded) that are at a
 /// distance k*step from min.
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn from_range(min: u64, max: u64, step: u32) *Bitmap {
     _ = min;
     _ = max;
@@ -59,7 +55,6 @@ pub fn from_range(min: u64, max: u64, step: u32) *Bitmap {
 ///
 /// Creates a new bitmap from a pointer of u32 integers
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn of_ptr(vals: []const u32) *Bitmap {
     _ = vals;
     unreachable;
@@ -67,7 +62,6 @@ pub fn of_ptr(vals: []const u32) *Bitmap {
 
 ///
 /// Check if the bitmap contains any shared containers.
-///
 pub fn contains_shared(r: Bitmap) *Bitmap {
     _ = r;
     unreachable; // TODO
@@ -77,7 +71,6 @@ pub fn contains_shared(r: Bitmap) *Bitmap {
 /// Unshare all shared containers.
 /// Returns true if any unsharing was performed, false if there were no shared
 /// containers.
-///
 pub fn unshare_all(r: *Bitmap) void {
     _ = r;
     unreachable; // TODO
@@ -93,7 +86,6 @@ pub fn unshare_all(r: *Bitmap) void {
 ///
 /// When setting this flag to false, if any containers are shared, they
 /// are unshared (cloned) immediately.
-///
 pub fn get_copy_on_write(r: *const Bitmap) bool {
     return r.high_low_container.flags.contains(.cow);
 }
@@ -112,7 +104,6 @@ pub fn set_copy_on_write(r: *Bitmap, cow: bool) void {
 /// Return a copy of the bitmap with all values shifted by offset.
 /// The returned pointer may be NULL in case of errors. The caller is responsible
 /// for freeing the return bitmap.
-///
 pub fn add_offset(bm: Bitmap, offset: i64) *Bitmap {
     _ = bm;
     _ = offset;
@@ -123,7 +114,6 @@ pub fn add_offset(bm: Bitmap, offset: i64) *Bitmap {
 /// Copies a bitmap (this does memory allocation).
 /// The caller is responsible for memory management.
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn copy(r: Bitmap) *Bitmap {
     _ = r;
     unreachable; // TODO
@@ -138,7 +128,6 @@ pub fn copy(r: Bitmap) *Bitmap {
 /// You may also rely on and_inplace to avoid creating
 /// many temporary bitmaps.
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn andWith(r1: Bitmap, r2: Bitmap) *Bitmap {
     _ = r1;
     _ = r2;
@@ -147,7 +136,6 @@ pub fn andWith(r1: Bitmap, r2: Bitmap) *Bitmap {
 
 ///
 /// Computes the size of the intersection between two bitmaps.
-///
 pub fn and_cardinality(r1: Bitmap, r2: Bitmap) u64 {
     _ = r1;
     _ = r2;
@@ -156,7 +144,6 @@ pub fn and_cardinality(r1: Bitmap, r2: Bitmap) u64 {
 
 ///
 /// Check whether two bitmaps intersect.
-///
 pub fn intersect(r1: Bitmap, r2: Bitmap) bool {
     _ = r1;
     _ = r2;
@@ -165,7 +152,6 @@ pub fn intersect(r1: Bitmap, r2: Bitmap) bool {
 
 ///
 /// Check whether a bitmap and an open range intersect.
-///
 pub fn intersect_with_range(bm: Bitmap, x: u64, y: u64) bool {
     _ = bm;
     _ = x;
@@ -178,7 +164,6 @@ pub fn intersect_with_range(bm: Bitmap, x: u64, y: u64) bool {
 /// distance, or the Jaccard similarity coefficient)
 ///
 /// The Jaccard index is undefined if both bitmaps are empty.
-///
 pub fn jaccard_index(r1: Bitmap, r2: Bitmap) f64 {
     _ = r1;
     _ = r2;
@@ -187,7 +172,6 @@ pub fn jaccard_index(r1: Bitmap, r2: Bitmap) f64 {
 
 ///
 /// Computes the size of the union between two bitmaps.
-///
 pub fn or_cardinality(r1: Bitmap, r2: Bitmap) u64 {
     _ = r1;
     _ = r2;
@@ -196,7 +180,6 @@ pub fn or_cardinality(r1: Bitmap, r2: Bitmap) u64 {
 
 ///
 /// Computes the size of the difference (andnot) between two bitmaps.
-///
 pub fn andnot_cardinality(r1: Bitmap, r2: Bitmap) u64 {
     _ = r1;
     _ = r2;
@@ -205,7 +188,6 @@ pub fn andnot_cardinality(r1: Bitmap, r2: Bitmap) u64 {
 
 ///
 /// Computes the size of the symmetric difference (xor) between two bitmaps.
-///
 pub fn xor_cardinality(r1: Bitmap, r2: Bitmap) u64 {
     _ = r1;
     _ = r2;
@@ -218,7 +200,6 @@ pub fn xor_cardinality(r1: Bitmap, r2: Bitmap) u64 {
 ///
 /// Performance hint: if you are computing the intersection between several
 /// bitmaps, two-by-two, it is best to start with the smallest bitmap.
-///
 pub fn and_inplace(r1: *Bitmap, r2: Bitmap) void {
     _ = r1;
     _ = r2;
@@ -229,7 +210,6 @@ pub fn and_inplace(r1: *Bitmap, r2: Bitmap) void {
 /// Computes the union between two bitmaps and returns new bitmap. The caller is
 /// responsible for memory management.
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn or_with(r1: Bitmap, r2: Bitmap) *Bitmap {
     _ = r1;
     _ = r2;
@@ -239,7 +219,6 @@ pub fn or_with(r1: Bitmap, r2: Bitmap) *Bitmap {
 ///
 /// Inplace version of `or_with(), modifies r1.
 /// TODO: decide whether r1 == r2 ok
-///
 pub fn or_inplace(r1: *Bitmap, r2: Bitmap) void {
     _ = r1;
     _ = r2;
@@ -251,7 +230,6 @@ pub fn or_inplace(r1: *Bitmap, r2: Bitmap) void {
 /// Caller is responsible for freeing the result.
 /// See also `or_many_heap()`
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn or_many(rs: []const Bitmap) *Bitmap {
     _ = rs;
     unreachable; // TODO
@@ -261,7 +239,6 @@ pub fn or_many(rs: []const Bitmap) *Bitmap {
 /// Compute the union of 'number' bitmaps using a heap. This can sometimes be
 /// faster than `or_many() which uses a naive algorithm.
 /// Caller is responsible for freeing the result.
-///
 pub fn or_many_heap(number: u32, rs: []const Bitmap) *Bitmap {
     _ = number;
     _ = rs;
@@ -272,7 +249,6 @@ pub fn or_many_heap(number: u32, rs: []const Bitmap) *Bitmap {
 /// Computes the symmetric difference (xor) between two bitmaps
 /// and returns new bitmap. The caller is responsible for memory management.
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn xor(r1: Bitmap, r2: Bitmap) *Bitmap {
     _ = r1;
     _ = r2;
@@ -281,7 +257,6 @@ pub fn xor(r1: Bitmap, r2: Bitmap) *Bitmap {
 
 ///
 /// Inplace version of xor, modifies r1, r1 != r2.
-///
 pub fn xor_inplace(r1: *Bitmap, r2: Bitmap) void {
     _ = r1;
     _ = r2;
@@ -292,7 +267,6 @@ pub fn xor_inplace(r1: *Bitmap, r2: Bitmap) void {
 /// Compute the xor of 'number' bitmaps.
 /// Caller is responsible for freeing the result.
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn xor_many(number: usize, rs: []const Bitmap) *Bitmap {
     _ = number;
     _ = rs;
@@ -303,7 +277,6 @@ pub fn xor_many(number: usize, rs: []const Bitmap) *Bitmap {
 /// Computes the difference (andnot) between two bitmaps and returns new bitmap.
 /// Caller is responsible for freeing the result.
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn andnot(r1: Bitmap, r2: Bitmap) *Bitmap {
     _ = r1;
     _ = r2;
@@ -312,7 +285,6 @@ pub fn andnot(r1: Bitmap, r2: Bitmap) *Bitmap {
 
 ///
 /// Inplace version of andnot, modifies r1, r1 != r2.
-///
 pub fn andnot_inplace(r1: *Bitmap, r2: Bitmap) void {
     _ = r1;
     _ = r2;
@@ -380,7 +352,6 @@ pub const BulkContext = struct {
 ///
 /// In order to exploit this optimization, the caller should call this function
 /// with values with the same "key" (high 16 bits of the value) consecutively.
-///
 pub fn add_bulk(r: *Bitmap, context: *BulkContext, val: u32) !void {
     _ = r;
     _ = context;
@@ -390,7 +361,6 @@ pub fn add_bulk(r: *Bitmap, context: *BulkContext, val: u32) !void {
 
 ///
 /// Add value x
-///
 pub fn add(r: *Bitmap, allocator: mem.Allocator, x: u32) !void {
     try r.add_many(allocator, &.{x});
 }
@@ -1313,7 +1283,6 @@ pub fn frozen_view(
 /// data points were necessarily visited).
 ///
 /// Iteration is ordered: from the smallest to the largest elements.
-///
 pub fn roaring_iterate(r: Bitmap) void {
     _ = r;
     //                      void *ptr);
@@ -1325,7 +1294,6 @@ pub fn roaring_iterate(r: Bitmap) void {
 
 ///
 /// Return true if the two bitmaps contain the same elements.
-///
 pub fn equals(r1: Bitmap, r2: Bitmap) bool {
     const ra1 = &r1.high_low_container;
     const ra2 = &r2.high_low_container;
@@ -1356,7 +1324,6 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
 
 ///
 /// Return true if all the elements of r1 are also in r2.
-///
 pub fn is_subset(r1: Bitmap, r2: Bitmap) bool {
     _ = r1;
     _ = r2;
@@ -1366,7 +1333,6 @@ pub fn is_subset(r1: Bitmap, r2: Bitmap) bool {
 ///
 /// Return true if all the elements of r1 are also in r2, and r2 is strictly
 /// greater than r1.
-///
 pub fn is_strict_subset(r1: Bitmap, r2: Bitmap) bool {
     _ = r1;
     _ = r2;
@@ -1389,7 +1355,6 @@ pub fn is_strict_subset(r1: Bitmap, r2: Bitmap) bool {
 /// operations force a bitset conversion.
 ///
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn lazy_or(
     r1: Bitmap,
     r2: Bitmap,
@@ -1407,7 +1372,6 @@ pub fn lazy_or(
 ///
 /// `bitsetconversion` is a flag which determines whether container-container
 /// operations force a bitset conversion.
-///
 pub fn lazy_or_inplace(r1: *Bitmap, r2: Bitmap, bitsetconversion: bool) void {
     _ = r1;
     _ = r2;
@@ -1420,7 +1384,6 @@ pub fn lazy_or_inplace(r1: *Bitmap, r2: Bitmap, bitsetconversion: bool) void {
 ///
 /// Execute maintenance on a bitmap created from `lazy_or()`
 /// or modified with `lazy_or_inplace()`.
-///
 pub fn repair_after_lazy(r: *Bitmap) void {
     _ = r;
     unreachable; // TODO
@@ -1438,7 +1401,6 @@ pub fn repair_after_lazy(r: *Bitmap) void {
 /// the result.
 ///
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn lazy_xor(r1: Bitmap, r2: Bitmap) *Bitmap {
     _ = r1;
     _ = r2;
@@ -1449,7 +1411,6 @@ pub fn lazy_xor(r1: Bitmap, r2: Bitmap) *Bitmap {
 /// (For expert users who seek high performance.)
 ///
 /// Inplace version of lazy_xor, modifies r1. r1 != r2
-///
 pub fn lazy_xor_inplace(r1: *Bitmap, r2: Bitmap) void {
     _ = r1;
     _ = r2;
@@ -1461,7 +1422,6 @@ pub fn lazy_xor_inplace(r1: *Bitmap, r2: Bitmap) void {
 /// The number of negated values is range_end - range_start.
 /// Areas outside the range are passed through unchanged.
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn flip(r: Bitmap, range_start: u64, range_end: u64) *Bitmap {
     _ = r;
     _ = range_start;
@@ -1474,7 +1434,6 @@ pub fn flip(r: Bitmap, range_start: u64, range_end: u64) *Bitmap {
 /// The number of negated values is range_end - range_start + 1.
 /// Areas outside the range are passed through unchanged.
 /// The returned pointer may be NULL in case of errors.
-///
 pub fn flip_closed(x1: Bitmap, range_start: u32, range_end: u32) *Bitmap {
     _ = x1;
     _ = range_start;
@@ -1486,7 +1445,6 @@ pub fn flip_closed(x1: Bitmap, range_start: u32, range_end: u32) *Bitmap {
 /// interval: [range_start, range_end). The number of negated values is
 /// range_end - range_start.
 /// Areas outside the range are passed through unchanged.
-///
 pub fn flip_inplace(r: *Bitmap, range_start: u64, range_end: u64) void {
     _ = r;
     _ = range_start;
@@ -1499,7 +1457,6 @@ pub fn flip_inplace(r: *Bitmap, range_start: u64, range_end: u64) void {
 /// interval: [range_start, range_end]. The number of negated values is
 /// range_end - range_start + 1.
 /// Areas outside the range are passed through unchanged.
-///
 pub fn flip_inplace_closed(r: *Bitmap, range_start: u32, range_end: u32) void {
     _ = r;
     _ = range_start;
@@ -1512,7 +1469,6 @@ pub fn flip_inplace_closed(r: *Bitmap, range_start: u32, range_end: u32) void {
 /// If the size of the roaring bitmap is strictly greater than rank, then this
 /// function returns true and sets element to the element of given rank.
 /// Otherwise, it returns false.
-///
 pub fn select(r: Bitmap, rank_: u32, element: *u32) bool {
     _ = r;
     _ = rank_;
@@ -1529,7 +1485,6 @@ pub fn select(r: Bitmap, rank_: u32, element: *u32) bool {
 /// rank: select refers to the smallest value
 /// as having index 0, whereas rank returns 1 when ranking
 /// the smallest value.
-///
 pub fn rank(r: Bitmap, x: u32) u64 {
     _ = r;
     _ = x;
@@ -1544,7 +1499,6 @@ pub fn rank(r: Bitmap, x: u32) u64 {
 /// Caller is responsible to ensure that there is enough memory allocated, e.g.
 ///
 ///     ans = malloc((end-begin)/// @sizeOf(u64));
-///
 pub fn rank_many(r: Bitmap, begin: []const u32, end: []const u32, ans: []u64) void {
     _ = r;
     _ = begin;
@@ -1559,14 +1513,12 @@ pub fn rank_many(r: Bitmap, begin: []const u32, end: []const u32, ans: []u64) vo
 /// The difference with rank function is that this function will return -1 when x
 /// is not the element of roaring bitmap, but the rank function will return a
 /// non-negative number.
-///
 pub fn get_index(r: Bitmap, x: u32) i64 {
     return r.high_low_container.get_index(@truncate(x));
 }
 
 ///
 /// Returns the smallest value in the set, or u32_max if the set is empty.
-///
 pub fn minimum(r: Bitmap) u32 {
     _ = r;
     unreachable; // TODO
@@ -1574,7 +1526,6 @@ pub fn minimum(r: Bitmap) u32 {
 
 ///
 /// Returns the greatest value in the set, or 0 if the set is empty.
-///
 pub fn maximum(r: Bitmap) u32 {
     _ = r;
     unreachable; // TODO
@@ -1644,7 +1595,6 @@ const Iterator32 = struct {
 /// Initialize an iterator object that can be used to iterate through the values.
 /// If there is a  value, then this iterator points to the first value and
 /// `it.has_value` is true. The value is in `it.current_value`.
-///
 pub fn iterator_init(r: Bitmap, newit: *Iterator32) void {
     _ = r;
     _ = newit;
@@ -1655,7 +1605,6 @@ pub fn iterator_init(r: Bitmap, newit: *Iterator32) void {
 /// Initialize an iterator object that can be used to iterate through the values.
 /// If there is a value, then this iterator points to the last value and
 /// `it.has_value` is true. The value is in `it.current_value`.
-///
 pub fn iterator_init_last(r: Bitmap, newit: *Iterator32) void {
     _ = r;
     _ = newit;
@@ -1669,7 +1618,6 @@ pub fn iterator_init_last(r: Bitmap, newit: *Iterator32) void {
 /// The iterator is initialized (this function calls `roaring_iterator_init()`)
 /// If there is a value, then this iterator points to the first value and
 /// `it.has_value` is true.  The value is in `it.current_value`.
-///
 pub fn roaring_iterator_create(r: Bitmap) *Iterator32 {
     _ = r;
     unreachable; // TODO
@@ -1683,7 +1631,6 @@ pub fn roaring_iterator_create(r: Bitmap) *Iterator32 {
 /// Once `it.has_value` is false, `iterator32_advance` should not
 /// be called on the iterator again. Calling `iterator32_previous`
 /// is allowed.
-///
 pub fn iterator32_advance(it: *Iterator32) bool {
     _ = it;
     unreachable; // TODO
@@ -1697,7 +1644,6 @@ pub fn iterator32_advance(it: *Iterator32) bool {
 /// Once `it.has_value` is false, `iterator32_previous` should not
 /// be called on the iterator again. Calling `iterator32_advance` is
 /// allowed.
-///
 pub fn iterator32_previous(it: *Iterator32) bool {
     _ = it;
     unreachable; // TODO
@@ -1707,7 +1653,6 @@ pub fn iterator32_previous(it: *Iterator32) bool {
 /// Move the iterator to the first value >= `val`. If there is a such a value,
 /// then `it.has_value` is true. The new value is in `it.current_value`.
 /// For convenience, returns `it.has_value`.
-///
 pub fn iterator32_move_equalorlarger(it: *Iterator32, val: u32) bool {
     _ = it;
     _ = val;
@@ -1717,7 +1662,6 @@ pub fn iterator32_move_equalorlarger(it: *Iterator32, val: u32) bool {
 ///
 /// Creates a copy of an iterator.
 /// Caller must free it.
-///
 pub fn iterator32_copy(dst: *Iterator32, it: *const Iterator32) void {
     _ = dst;
     _ = it;
@@ -1726,7 +1670,6 @@ pub fn iterator32_copy(dst: *Iterator32, it: *const Iterator32) void {
 
 ///
 /// Free memory following `roaring_iterator_create()`
-///
 pub fn iterator32_free(it: *Iterator32) void {
     _ = it;
     unreachable; // TODO
@@ -1758,7 +1701,6 @@ pub fn iterator32_read(it: *Iterator32, buf: []u32) void {
 ///
 /// This function is equivalent to calling `iterator32_advance()`
 /// ${count} times but is much more efficient.
-///
 pub fn iterator32_skip(it: *Iterator32, count: u32) u32 {
     _ = it;
     _ = count;
@@ -1773,7 +1715,6 @@ pub fn iterator32_skip(it: *Iterator32, count: u32) u32 {
 ///
 /// This function is equivalent to calling `iterator32_previous()`
 /// ${count} times but is much more efficient.
-///
 pub fn iterator32_skip_backward(it: *Iterator32, count: u32) u32 {
     _ = it;
     _ = count;
