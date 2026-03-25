@@ -1,4 +1,5 @@
 const std = @import("std");
+const afl = @import("afl_kit");
 
 pub fn build(b: *std.Build) void {
     const options = b.addOptions();
@@ -12,9 +13,11 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "build-options", .module = options.createModule() }},
     });
 
+    const use_llvm = b.option(bool, "llvm", "use llvm. false by default. needed when fuzzing by zig 0.15.2.") orelse false;
     const tests = b.addTest(.{
         .root_module = mod,
         .filters = if (b.option([]const []const u8, "test-filter", "filter tests")) |o| o else &.{},
+        .use_llvm = use_llvm,
     });
     const avx512 = b.option(bool, "avx512", "enable croaring avx512.  default false.") orelse false;
     tests.root_module.addIncludePath(b.path("src"));
@@ -39,4 +42,26 @@ pub fn build(b: *std.Build) void {
     const check = b.step("check", "Check if everything compiles");
     check.dependOn(&exe_check.step);
     check.dependOn(&tests.step);
+
+    // AFL++ fuzzing exe
+    if (b.option(bool, "build-fuzz-exe", "Generate an instrumented executable for AFL++") orelse false) {
+        // a step for generating fuzzing tooling
+        // an oblect file that contains the test function
+        const afl_obj = b.addObject(.{
+            .name = "fuzz_obj",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/fuzz.zig"),
+                .target = target,
+                .optimize = .Debug,
+                .link_libc = true,
+                .stack_check = false,
+                .fuzz = true,
+                .imports = &.{.{ .name = "zroaring", .module = mod }},
+            }),
+        });
+
+        // Generate an instrumented executable and install.  but only when afl-cc is present.
+        const afl_fuzz = afl.addInstrumentedExe(b, target, optimize, null, true, afl_obj, &.{}).?;
+        b.getInstallStep().dependOn(&b.addInstallBinFile(afl_fuzz, "fuzz-afl").step);
+    }
 }

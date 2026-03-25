@@ -140,9 +140,10 @@ fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []
     try zr.frozen_serialize(zr_frozen_buf);
     try testing.expectEqualSlices(u8, cr_frozen_buf, zr_frozen_buf);
 
-    var zr2 = try Bitmap.frozen_view(allocator, zr_frozen_buf);
-    defer zr2.deinit(allocator);
-    for (values) |v| try testing.expect(zr2.contains(v));
+    var zr_frozen = try Bitmap.frozen_view(allocator, zr_frozen_buf);
+    defer zr_frozen.deinit(allocator);
+    for (values) |v| try testing.expect(zr_frozen.contains(v));
+    try testing.expect(zr.equals(zr_frozen));
 }
 
 fn validate() !void {

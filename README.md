@@ -35,6 +35,19 @@ try std.testing.expect(zr.contains(1));
 try std.testing.expect(!zr.contains(2));
 ```
 
+# Test
+`$ zig build test`
+### Fuzz
+* with the build system:
+```console
+$ zig build test -Dllvm --fuzz
+```
+* with nix-shell and AFL++:
+```console
+$ nix-shell
+$ ./afl-fuzz.sh
+```
+
 # Contributing
 Human contributions are very welcome.  Please open a pull request or issue on codeberg if you run into a TODO, FIXME or any problems while using this project.  There is a lot of work yet to be done here.
 

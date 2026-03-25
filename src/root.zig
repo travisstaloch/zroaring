@@ -28,4 +28,5 @@ test {
     _ = RunContainer;
     _ = SharedContainer;
     _ = @import("validate.zig");
+    _ = @import("fuzz.zig");
 }

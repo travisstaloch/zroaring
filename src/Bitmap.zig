@@ -1298,7 +1298,7 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
     const ra1 = &r1.high_low_container;
     const ra2 = &r2.high_low_container;
 
-    if (false) {
+    if (false) { // a respectable way to check equality.  left for benchmarking.
         if (ra1.kvs.len != ra2.kvs.len) return false;
         const slice1 = ra1.kvs.slice();
         const slice2 = ra2.kvs.slice();
@@ -1311,6 +1311,7 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
         return true;
     }
 
+    // TODO bench this single return version vs above
     return ra1.kvs.len == ra2.kvs.len and eql: {
         const slice1 = ra1.kvs.slice();
         const slice2 = ra2.kvs.slice();

@@ -746,8 +746,11 @@ pub const RunContainer = struct {
     /// Return true if the two containers have the same content.
     ///
     pub fn equals(container1: RunContainer, container2: *const RunContainer) bool {
-        if (container1.n_runs != container2.n_runs) return false;
-        return std.mem.eql([2]u8, @ptrCast(container1.slice()), @ptrCast(container2.slice()));
+        return std.mem.eql(
+            u8,
+            mem.sliceAsBytes(container1.slice()),
+            mem.sliceAsBytes(container2.slice()),
+        );
     }
 
     pub fn format(c: RunContainer, w: *Io.Writer) !void {
