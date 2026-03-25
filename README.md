@@ -1,5 +1,5 @@
 # About
-Exploring [CRoaring](https://github.com/RoaringBitmap/CRoaring) by attempting to port it to zig.  
+Exploring [CRoaring](https://github.com/RoaringBitmap/CRoaring) by attempting to port it to zig.
 
 This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) and mirrored to [github](https://github.com/archaistvolts/zroaring).
 
@@ -8,6 +8,8 @@ This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) a
 
 # Use
 With zig version 0.15.2
+
+Be sure to test your application in debug mode as there are many unreachable code paths left as TODOs.
 
 ### fetch package
 ```console
@@ -34,7 +36,7 @@ try std.testing.expect(!zr.contains(2));
 ```
 
 # Contributing
-Human contributions are very welcome.  Please open a pull request or issue on codeberg if you run into a TODO or FIXME while using this project.  There is a lot of work yet to be done here.
+Human contributions are very welcome.  Please open a pull request or issue on codeberg if you run into a TODO, FIXME or any problems while using this project.  There is a lot of work yet to be done here.
 
 # References
 * https://github.com/RoaringBitmap/RoaringFormatSpec
@@ -42,11 +44,19 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * https://github.com/awesomo4000/rawr
 * https://github.com/lalinsky/roaring.zig
 
-# Ideas
-* Support more set sizes than just u32 with generics or a build option.
-* Bounded API: initBuffer, appendBounded
-* For now this an exploration of CRoaring.  Hopefully this project could transition to a more from-scratch approach given better understanding.
-* an API which delegates to c and zig backends.  perhaps some c translation to build the c api?
-
-* https://github.com/MartinErhardt/RoaringRegex
- * use in regex / peg impl in another project
+# Ideas / TODOs - contributions wanted
+* [ ] Provide a similar api to std.HashMap
+* [ ] Bounded API: initBuffer, appendBounded
+* [ ] Support more set sizes than just u32 with generics and a build option
+* [ ] build commands `$ zig build [api-coverage | correctness | bench]`
+  * [ ] api-coverage:    show % of c api covered
+  * [ ] api-correctness: show % correct fuzzing with c api oracle
+  * [ ] api-endian:      show which api methods are endian sensitive - big endian write to file
+  * [ ] bench:           show timings of bench with c
+* [ ] documentation needs a lot of work
+  * [ ] audit endian-sensitive warnings in comments
+* [ ] prune comments.  i've used many of original CRoaring comments and some of them don't apply to this implementation.
+* [ ] audit endian sensitive methods.  i've tried for endian.
+* [ ] audit unreachable code paths.  return error.Unimplemented when possible for starters.
+* [ ] For now this a port of CRoaring.  Maybe this project will transition to a more from-scratch approach with time and familiarity.  Goal would be to reduce the codebase size without sacrificing performance.
+* [ ] use in regex / peg impl in another project maybe following https://github.com/MartinErhardt/RoaringRegex
