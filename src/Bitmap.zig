@@ -295,18 +295,15 @@ pub fn is_frozen(r: Bitmap) bool {
     return r.high_low_container.flags.contains(.frozen);
 }
 
-///
-/// TODO: consider implementing:
-///
-/// "Compute the xor of 'number' bitmaps using a heap. This can sometimes be
-///  faster than xor_many which uses a naive algorithm. Caller is
-///  responsible for freeing the result.""
-///
-/// Bitmap *xor_many_heap(number: u32,
-///                                                rs: []const Bitmap);
-///
+// TODO: consider implementing:
+//
+// "Compute the xor of 'number' bitmaps using a heap. This can sometimes be
+//  faster than xor_many which uses a naive algorithm. Caller is
+//  responsible for freeing the result.""
+
 ///
 /// Frees the memory.
+///
 pub fn deinit(r: *Bitmap, allocator: mem.Allocator) void {
     if (!r.is_frozen())
         r.high_low_container.clear(allocator)
@@ -378,7 +375,6 @@ pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !void {
     var idx: u32 = undefined;
     // std.debug.print("add_many {}\n", .{vals.len});
     const container = try r.containerptr_add(allocator, cur[0], &idx);
-    errdefer container.deinit(allocator);
     var context: BulkContext = .{
         .container = container,
         .idx = idx,
@@ -407,11 +403,11 @@ fn add_bulk_impl(
             .key = key,
         };
     } else {
-        // no need to seek the container, it is at hand because we already have
+        // no need to seek the container, it is at hand.  because we already have
         // the container at hand, we can do the insertion directly, bypassing
         // the roaring_bitmap_add call
         const container2 = try context.container.add(allocator, @truncate(val));
-        if (container2 != context.container) {
+        if (container2.tagged != context.container.tagged) {
             // rare instance when we need to change the container type
             @branchHint(.unlikely);
             context.container.deinit(allocator);
@@ -420,8 +416,9 @@ fn add_bulk_impl(
         }
     }
     // std.debug.print("keys {} {any}\n", .{ r.high_low_container.containers.len, r.high_low_container.containers.items(.key) });
-    if (@import("builtin").mode == .Debug)
+    if (@import("builtin").mode == .Debug) {
         assert(std.sort.isSorted(u16, r.high_low_container.kvs.items(.key), {}, std.sort.asc(u16)));
+    }
 }
 
 /// this is like roaring_bitmap_add, but it populates pointer arguments in such
@@ -444,7 +441,7 @@ fn containerptr_add(
         const c = ra.get_container_at_index(iu);
         const c2 = try c.add(allocator, lb);
         index.* = iu;
-        if (c2 != c) {
+        if (c2.tagged != c.tagged) {
             c.deinit(allocator);
             ra.set_container_at_index(iu, c2);
             return c2;
@@ -468,10 +465,36 @@ fn containerptr_add(
 ///
 /// Add value x
 /// Returns true if a new value was added, false if the value already existed.
-pub fn add_checked(r: *Bitmap, x: u32) bool {
-    _ = r;
-    _ = x;
-    unreachable; // TODO
+pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
+    const hb: u16 = @truncate(val >> 16);
+    const i = r.high_low_container.get_index(hb);
+
+    var result = false;
+    if (i >= 0) {
+        r.high_low_container.unshare_container_at_index(@intCast(i));
+        const container = r.high_low_container.get_container_at_index(@intCast(i));
+        const oldCardinality = container.get_cardinality();
+        const container2 = try container.add(allocator, @truncate(val));
+        if (container2.tagged != container.tagged) {
+            container.deinit(allocator);
+            r.high_low_container.set_container_at_index(@intCast(i), container2);
+            result = true;
+        } else {
+            const newCardinality = container.get_cardinality();
+            result = oldCardinality != newCardinality;
+        }
+    } else {
+        const newac = try allocator.create(ArrayContainer);
+        newac.* = .init;
+        const c = Container.init(newac);
+        errdefer c.deinit(allocator);
+        const container = try c.add(allocator, @truncate(val));
+        // we can assume that it stays an array container
+        try r.high_low_container.insert_new_key_value_at(allocator, @intCast(-i - 1), hb, container);
+        result = true;
+    }
+
+    return result;
 }
 
 ///
@@ -499,10 +522,10 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     var src = misc.cast(i32, prefix_length + common_length) - 1;
     var dst = misc.cast(i32, ra.kvs.len - suffix_length) - 1;
     var key = max_key;
-    // std.debug.print("key {} min_key {} max_key {}\n", .{ key, min_key, max_key });
     while (key != min_key -% 1) : (key -%= 1) { // beware of min_key==0
-        const container_min = if (min_key == key) min else 0;
-        const container_max = if (max_key == key) max else 0xffff;
+        // std.debug.print("key {} min_key {} max_key {}\n", .{ key, min_key, max_key });
+        const container_min = if (min_key == key) min & 0xffff else 0;
+        const container_max = if (max_key == key) max & 0xffff else 0xffff;
         var new_container: Container = .zero;
         const s = ra.kvs.slice();
         // std.debug.print("src {}\n", .{src});
@@ -511,7 +534,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
             ra.unshare_container_at_index(srcu);
             new_container =
                 try s.items(.container)[srcu].add_range(allocator, container_min, container_max);
-            if (new_container != s.items(.container)[srcu]) {
+            if (new_container.tagged != s.items(.container)[srcu].tagged) {
                 s.items(.container)[srcu].deinit(allocator);
             }
             src -= 1;
@@ -647,6 +670,7 @@ pub fn cardinality(r: Bitmap) u64 {
     }
     return card;
 }
+pub const get_cardinality = cardinality;
 
 ///
 /// Returns the number of elements in the range [range_start, range_end).
@@ -732,8 +756,8 @@ pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
         r.high_low_container.unshare_container_at_index(@intCast(i)); // TODO: this introduces extra cloning!
 
         const c1 = try c.convert_run_optimize(allocator);
-        if (c1.typecode == .run) answer = true;
-        if (c != c1) {
+        if (c1.typecode() == .run) answer = true;
+        if (c.tagged != c1.tagged) {
             // std.debug.print("run_optimize. converted {f} to {f}\n", .{ c, c1 });
             r.high_low_container.set_container_at_index(@intCast(i), c1);
         }
@@ -993,7 +1017,7 @@ pub fn frozen_size_in_bytes(rb: Bitmap) usize {
     var num_bytes: usize = 0;
     const slice = ra.kvs.slice();
     for (slice.items(.container)) |c| {
-        num_bytes += switch (c.typecode) {
+        num_bytes += switch (c.typecode()) {
             .bitset => BitsetContainer.SIZE_IN_BYTES,
             .run => c.const_cast(.run).n_runs * @sizeOf(root.Rle16),
             .array => c.const_cast(.array).cardinality * @sizeOf(u16),
@@ -1036,11 +1060,11 @@ pub fn frozen_serialize(rb: Bitmap, buf: []u8) !void {
     var array_zone_size: usize = 0;
     const slice = ra.kvs.slice();
     for (slice.items(.container)) |c| {
-        switch (c.typecode) {
+        switch (c.typecode()) {
             .bitset => bitset_zone_size += BitsetContainer.SIZE_IN_WORDS,
             .array => array_zone_size += c.const_cast(.array).cardinality,
             .run => run_zone_size += c.const_cast(.run).n_runs,
-            .shared => unreachable,
+            .shared, _ => unreachable,
         }
     }
 
@@ -1055,9 +1079,9 @@ pub fn frozen_serialize(rb: Bitmap, buf: []u8) !void {
     const header_zone = arena_alloc(u32, &cur, 1);
     assert(cur == buf.ptr + buf.len);
     for (ra.kvs.items(.container), count_zone, typecode_zone) |c, *count, *typecode| {
-        // std.debug.print("c {f} typecode {}\n", .{ c, @intFromEnum(c.typecode) });
-        typecode.* = c.typecode;
-        count.* = @intCast(switch (c.typecode) {
+        // std.debug.print("c {f} typecode {}\n", .{ c, @intFromEnum(c.typecode()) });
+        typecode.* = c.typecode();
+        count.* = @intCast(switch (c.typecode()) {
             .bitset => blk: {
                 const bc = c.const_cast(.bitset);
                 // std.debug.print("bc {}\n", .{bc.cardinality});
@@ -1122,7 +1146,7 @@ fn frozen_counts_sizes(typecodes: []const Typecode, counts: []const u16) FrozenC
                 ret.num_arrays += 1;
                 ret.array_size += @as(u32, count + 1) * @sizeOf(u16);
             },
-            .shared => unreachable,
+            .shared, _ => unreachable,
         }
         // std.debug.print(
         //     "\n  length {}\n  bitset_zone_size {}\n  run_zone_size {}\n  array_zone_size {}\n",
@@ -1136,7 +1160,7 @@ fn counts_sizes(rb: Bitmap) FrozenCounts {
     var ret = mem.zeroes(FrozenCounts);
     for (rb.high_low_container.kvs.items(.container)) |c| {
         // std.debug.print("typecode {t}\n", .{typecodes[i]});
-        switch (c.typecode) {
+        switch (c.typecode()) {
             .bitset => {
                 ret.num_bitsets += 1;
                 ret.bitset_size += BitsetContainer.SIZE_IN_BYTES;
@@ -1149,7 +1173,7 @@ fn counts_sizes(rb: Bitmap) FrozenCounts {
                 ret.num_arrays += 1;
                 ret.array_size += c.const_cast(.array).cardinality * @sizeOf(u16);
             },
-            .shared => unreachable,
+            .shared, _ => unreachable,
         }
     }
     return ret;
@@ -1265,7 +1289,7 @@ pub fn frozen_view(
                 c.* = .init(&run_zone[0]);
                 run_zone += 1;
             },
-            .shared => unreachable,
+            .shared, _ => unreachable,
         }
     }
     return rb;
@@ -1298,7 +1322,7 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
     const ra1 = &r1.high_low_container;
     const ra2 = &r2.high_low_container;
 
-    if (false) { // a respectable way to check equality.  left for benchmarking.
+    if (false) { // a 'normal' way to check equality.  left for benchmarking.
         if (ra1.kvs.len != ra2.kvs.len) return false;
         const slice1 = ra1.kvs.slice();
         const slice2 = ra2.kvs.slice();
@@ -1555,12 +1579,55 @@ pub fn maximum(r: Bitmap) u32 {
 /// If reason is non-null, it will be set to a string describing the first
 /// inconsistency found if any.
 ///
-// bool r: Bitmap internal_validate({}
-//                                       const char **reason);
-pub fn internal_validate(r: Bitmap, reason: *[]const u8) bool {
-    _ = r;
-    _ = reason;
-    unreachable; // TODO
+/// Checks that:
+/// - Array containers are sorted and contain no duplicates
+/// - Range containers are sorted and contain no overlapping ranges
+/// - Roaring containers are sorted by key and there are no duplicate keys
+/// - The correct container type is use for each container (e.g. bitmaps aren't
+/// used for small containers)
+/// - Shared containers are only used when the bitmap is COW
+///
+pub fn internal_validate(r: Bitmap, reason: ?*?[]const u8) bool {
+    var reason_local: ?[]const u8 = null;
+    const reason1 = reason orelse &reason_local;
+    reason1.* = null;
+    const ra = &r.high_low_container;
+    if (ra.flags.intersectWith(.initMany(&.{ .cow, .frozen })).count() >= 1) { // & ~( ROARING_FLAG_COW | ROARING_FLAG_FROZEN)) {
+        reason1.* = "invalid flags";
+        return false;
+    }
+    if (ra.kvs.len == 0) return true;
+
+    const slice = ra.kvs.slice();
+    const keys = slice.items(.key);
+    const containers = slice.items(.container);
+    _ = containers; // autofix
+    var prev_key = keys[0];
+    for (keys[1..]) |key| {
+        if (key <= prev_key) {
+            reason1.* = "keys not strictly increasing";
+            return false;
+        }
+        prev_key = key;
+    }
+
+    const cow = r.get_copy_on_write();
+
+    for (slice.items(.container)) |c| {
+        if (c.typecode() == .shared and !cow) {
+            reason1.* = "shared container in non-COW bitmap";
+            return false;
+        }
+        if (!c.internal_validate(reason1)) {
+            // reason should already be set
+            if (reason1.* == null) {
+                reason1.* = "container failed to validate but no reason given";
+            }
+            return false;
+        }
+    }
+
+    return true;
 }
 
 ///*******************

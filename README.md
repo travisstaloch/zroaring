@@ -45,7 +45,7 @@ $ zig build test -Dllvm --fuzz
 * with nix-shell and AFL++:
 ```console
 $ nix-shell
-$ ./afl-fuzz.sh
+$ ./scripts/afl-fuzz.sh
 ```
 
 # Contributing
@@ -57,7 +57,8 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * https://github.com/awesomo4000/rawr
 * https://github.com/lalinsky/roaring.zig
 
-# Ideas / TODOs - contributions wanted
+# Ideas / TODOs - contributions welcome
+* [ ] validation: fix failing test checkAllocationFailures test
 * [ ] Provide a similar api to std.HashMap
 * [ ] Bounded API: initBuffer, appendBounded
 * [ ] Support more set sizes than just u32 with generics and a build option

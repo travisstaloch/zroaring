@@ -12,38 +12,23 @@ test fuzz { //
     try std.testing.fuzz(Context{}, Context.testOne, .{});
 }
 
-var fuzz_alloc_buf: ?[]u8 = null;
-var gpa: mem.Allocator = undefined;
-const fuzz_alloc_buf_size = 100 * 1024 * 1024; // 100 Mb
-
-export fn zig_fuzz_init() void {
-    var x = std.heap.GeneralPurposeAllocator(.{}){};
-    gpa = x.allocator();
-    assert(fuzz_alloc_buf == null);
-    fuzz_alloc_buf = gpa.alloc(u8, fuzz_alloc_buf_size) catch @panic("OOM");
-}
-
-const FuzzedDataProvider = struct {
-    data_ptr_: [*]const u8,
-    remaining_bytes_: usize,
+const DataProvider = struct {
+    data: []const u8,
     // Returns a number in the range [min, max] by consuming bytes from the
     // input data. The value might not be uniformly distributed in the given
     // range. If there's no input data left, always returns |min|. |min| must
     // be less than or equal to |max|.
-    // template <typename T>
-    // T FuzzedDataProvider::ConsumeIntegralInRange(T min, T max) {
-    pub fn ConsumeIntegralInRange(fdp: *FuzzedDataProvider, T: type, min: T, max: T) T {
+    pub fn ConsumeIntegralInRange(fdp: *DataProvider, T: type, min: T, max: T) T {
         comptime assert(@typeInfo(T) == .int and @sizeOf(T) <= @sizeOf(u64)); // "Unsupported integral type
-
-        if (min > max) std.process.exit(1);
 
         // Use the biggest type possible to hold the range and the result.
         const range = @as(u64, max) - min;
         var result: u64 = 0;
         var offset: usize = 0;
         const CHAR_BIT = 8;
-        while (offset < @sizeOf(T) * CHAR_BIT and (range >> @intCast(offset)) > 0 and
-            fdp.remaining_bytes_ != 0)
+        while (offset < @sizeOf(T) * CHAR_BIT and
+            (range >> @intCast(offset)) > 0 and
+            fdp.data.len != 0)
         {
             // Pull bytes off the end of the seed data. Experimentally, this seems to
             // allow the fuzzer to more easily explore the input space. This makes
@@ -51,8 +36,8 @@ const FuzzedDataProvider = struct {
             // and this data is often used to encode length of data read by
             // |ConsumeBytes|. Separating out read lengths makes it easier modify the
             // contents of the data that is actually read.
-            fdp.remaining_bytes_ -= 1;
-            result = (result << CHAR_BIT) | fdp.data_ptr_[fdp.remaining_bytes_];
+            fdp.data.len -= 1;
+            result = (result << CHAR_BIT) | fdp.data.ptr[fdp.data.len];
             offset += CHAR_BIT;
         }
 
@@ -63,8 +48,14 @@ const FuzzedDataProvider = struct {
         return @intCast(min + result);
     }
 
-    pub fn ConsumeVecInRange(fdp: *FuzzedDataProvider, allocator: mem.Allocator, length: usize, min_value: u32, max_value: u32) !std.ArrayList(u32) {
-        var result: std.ArrayList(u32) = .{};
+    pub fn ConsumeVecInRange(
+        fdp: *DataProvider,
+        allocator: mem.Allocator,
+        length: usize,
+        min_value: u32,
+        max_value: u32,
+    ) !std.ArrayList(u32) {
+        var result = std.ArrayList(u32){};
         try result.resize(allocator, length);
         for (result.items) |*it| {
             it.* = fdp.ConsumeIntegralInRange(u32, min_value, max_value);
@@ -72,6 +63,22 @@ const FuzzedDataProvider = struct {
         return result;
     }
 };
+
+var gpa_buf: ?[]u8 = null;
+const gpa_buf_size = 100 * 1024 * 1024; // 100 Mb
+var gpa: mem.Allocator = undefined;
+var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = undefined;
+fn oom() noreturn {
+    @panic("OOM");
+}
+
+export fn zig_fuzz_init() void {
+    // init alloc_buf
+    assert(gpa_buf == null);
+    gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+    gpa = gpa_state.allocator();
+    gpa_buf = gpa.alloc(u8, gpa_buf_size) catch oom();
+}
 
 ///
 /// A bitmap may contain up to 2**32 elements. Later this function will
@@ -90,7 +97,12 @@ const FuzzedDataProvider = struct {
 /// MB or so. With such a limited range, if we run out of memory, then we can
 /// almost certain that it has to do with a genuine bug.
 ///
-export fn zig_fuzz_test(data: [*]const u8, size: usize) void {
+export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
+    zig_fuzz_test1(dataptr[0..size]) catch return;
+}
+
+fn zig_fuzz_test1(data: []const u8) !void {
+    _ = bitmap32(data);
     const range_start: u32 = 0;
     const range_end: u32 = 10_000_000;
 
@@ -99,22 +111,60 @@ export fn zig_fuzz_test(data: [*]const u8, size: usize) void {
     // ConsumeVecInRange below produce integers in a small range starting at 0.
     //
 
-    var fdp: FuzzedDataProvider = .{ .data_ptr_ = data, .remaining_bytes_ = size };
+    var fdp: DataProvider = .{ .data = data };
     //
     // The next line was ConsumeVecInRange(fdp, 500, 0, 1000) but it would pick
     // 500 values at random from 0, 1000, making almost certain that all of the
     // values are picked. It seems more useful to pick 500 values in the range
     // 0,1000.
     //
-    var fba = std.heap.FixedBufferAllocator.init(fuzz_alloc_buf.?);
+    var fba = std.heap.FixedBufferAllocator.init(gpa_buf.?);
     const alloc = fba.allocator();
-    // const bitmap_data_a = fdp.ConsumeVecInRange(alloc, 500, 0, 1000) catch @panic("OOM");
-    const bitmap_data_b = fdp.ConsumeVecInRange(alloc, 500, 0, 1000) catch @panic("OOM");
+    const bitmap_data_a = try fdp.ConsumeVecInRange(alloc, 500, 0, 1000);
+    // std.debug.print("bitmap_data_a {any}\n", .{bitmap_data_a});
+    var a: Bitmap = .{};
+    try a.add_many(alloc, bitmap_data_a.items);
+    _ = try a.run_optimize(alloc);
+
+    const bitmap_data_b = try fdp.ConsumeVecInRange(alloc, 500, 0, 1000);
+    // std.debug.print("bitmap_data_b {any}\n", .{bitmap_data_b});
     var b: Bitmap = .{};
-    b.add_many(alloc, bitmap_data_b.items) catch @panic("OOM"); // autofix
-    _ = b.run_optimize(alloc) catch @panic("OOM");
-    b.add(alloc, fdp.ConsumeIntegralInRange(u32, range_start, range_end)) catch @panic("OOM");
-    if (false) std.debug.print("{} data_b {any} {f}\n", .{ size, bitmap_data_b.items, b });
+    try b.add_many(alloc, bitmap_data_b.items);
+    _ = try b.run_optimize(alloc);
+    try b.add(alloc, fdp.ConsumeIntegralInRange(u32, range_start, range_end));
+    _ = try b.add_checked(alloc, fdp.ConsumeIntegralInRange(u32, range_start, range_end));
+    const r0 = fdp.ConsumeIntegralInRange(u32, range_start, range_end);
+    const r1 = fdp.ConsumeIntegralInRange(u32, range_start, range_end);
+    const rmin = @min(r0, r1);
+    const rmax = @max(r0, r1);
+    if (rmin < rmax) try b.add_range(alloc, rmin, rmax);
+    // std.log.debug("{} data_b {any} {f}\n", .{ size, bitmap_data_b.items, b });
+}
+
+fn bitmap32(data: []const u8) u8 {
+    // We test that deserialization never fails.
+    var r = std.Io.Reader.fixed(data);
+    var bitmap = zroaring.Bitmap.portable_deserialize_safe(gpa, &r) catch return 0;
+    defer bitmap.deinit(gpa);
+    // The bitmap may not be usable if it does not follow the specification.
+    // We can validate the bitmap we recovered to make sure it is proper.
+    var reason_failure: ?[]const u8 = undefined;
+    if (bitmap.internal_validate(@ptrCast(&reason_failure))) {
+        // the bitmap is ok!
+        var cardinality = bitmap.get_cardinality();
+        for (100..1000) |ii| {
+            const i: u32 = @intCast(ii);
+            if (!bitmap.contains(i)) {
+                cardinality += 1;
+                bitmap.add(gpa, i) catch return 0;
+            }
+        }
+        if (cardinality != bitmap.get_cardinality()) {
+            std.debug.print("bug\n", .{});
+            std.process.exit(1);
+        }
+    }
+    return 0;
 }
 
 const std = @import("std");

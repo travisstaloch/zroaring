@@ -1,5 +1,4 @@
-const T = u32;
-// TODO build option or generic?
+const T = u32; // TODO build option or generic?
 pub const DEFAULT_MAX_SIZE = 4096; // MAX_CONTAINERS / 16
 pub const MAX_CONTAINERS = 65536; // DEFAULT_MAX_SIZE * 16
 pub const MAX_CARDINALITY = MAX_CONTAINERS;
@@ -7,8 +6,8 @@ pub const MAX_CARDINALITY = MAX_CONTAINERS;
 pub const SERIALIZATION_ARRAY_UINT32 = 1;
 pub const SERIALIZATION_CONTAINER = 2;
 pub const NO_OFFSET_THRESHOLD = 4;
-pub const BITSET_UNKNOWN_CARDINALITY = std.math.maxInt(u32);
-pub const CONTAINER_SIZE_IN_BYTES = @sizeOf(root.ArrayContainer);
+pub const BITSET_UNKNOWN_CARDINALITY = @as(T, 0) -% 1; // 0xffffffff
+pub const CONTAINER_SIZE_IN_BYTES = @sizeOf(root.ArrayContainer); // 128 on 64 bit platforms
 
 comptime {
     assert(DEFAULT_MAX_SIZE == @divExact(MAX_CONTAINERS, 16));

@@ -1,8 +1,10 @@
 const word_types = &.{ u1024, u512, u256, u128, u64, u32, u16, u8 };
 
-/// a bitset which stores integers as offsets relative to `MIN`
-/// * `MIN`, `max`: smallest and largest integers the bitset can represent.
+/// A bitset which stores integers as offsets relative to `MIN`
+/// * `MIN`, `MAX`: smallest and largest integers the bitset can represent.
 /// * `Word`: a integer word type such as u64.
+///
+/// Value type defaults to u16.
 ///
 // TODO simplify to non generic?
 pub fn WordBitset(options: struct {
@@ -17,7 +19,7 @@ pub fn WordBitset(options: struct {
         /// cached count of set bits in all words
         cardinality: u32,
         //                                                       example: MIN = 0
-        //                                                                max = 65535
+        //                                                                MAX = 65535
         //                                                               Word = u64
         /// a integer type which can hold both MIN and MAX.
         pub const Value = std.math.IntFittingRange(options.MIN, options.MAX); //u16
@@ -34,8 +36,8 @@ pub fn WordBitset(options: struct {
         pub const SIZE_IN_BYTES = SIZE_IN_WORDS * @sizeOf(Word); //             8192
         /// number of words with padding to block len                           1024
         const SIZE_IN_WORDS_PADDED: usize = mem.alignForward(usize, SIZE_IN_WORDS, BLOCK_LEN);
-        const WordsPtrAligned = [*]align(BLOCK_ALIGN) Word; //                  [*]align(32)u64
-        const WordsSliceAligned = []align(BLOCK_ALIGN) Word;
+        const WordsPtrAligned = [*]align(BLOCK_ALIGN) Word; //                  [*]align(32) u64
+        const WordsSliceAligned = []align(BLOCK_ALIGN) Word; //                 []align(32) u64
         const WordIndex = std.math.Log2Int(Word); //                            u6
         // blocks
         /// suggested vector length for `Word` or else largest suggested from `word_types`.
@@ -101,9 +103,9 @@ pub fn WordBitset(options: struct {
             // uint64_t offset;
             // uint64_t p = pos;
             // ASM_SHIFT_RIGHT(p, shift, offset);
-            // uint64_t load = bitset->words[offset];
-            // ASM_SET_BIT_INC_WAS_CLEAR(load, p, bitset->count);
-            // bitset->words[offset] = load;
+            // uint64_t load = bitset.words[offset];
+            // ASM_SET_BIT_INC_WAS_CLEAR(load, p, bitset.count);
+            // bitset.words[offset] = load;
             // std.debug.print("set({}) MIN {}\n", .{ v2, MIN });
 
             const offset = value - MIN;
@@ -193,7 +195,7 @@ pub fn WordBitset(options: struct {
             while (i < endword) : (i += 2)
                 words[i..][0..2].* = @splat(~word_zero);
             words[endword] =
-                temp | (~word_zero) >> @intCast(((~start + 1) - lenminusone - 1) % 64);
+                temp | (~word_zero) >> @intCast(((~start +% 1) -% lenminusone -% 1) % 64);
         }
         // TODO optimize like croaring
         pub const compute_cardinality = compute_cardinality_naive;
@@ -364,6 +366,27 @@ pub fn WordBitset(options: struct {
                 words[i] = ~word_zero;
             }
             words[endword] |= (~word_zero) >> @intCast((~end + 1) % 64);
+        }
+
+        ///
+        /// Validate the container. Returns true if valid.
+        ///
+        pub fn validate(v: Self, reason: *?[]const u8) bool {
+            if (v.cardinality != v.compute_cardinality()) {
+                reason.* = "cardinality is incorrect";
+                return false;
+            }
+            if (v.cardinality <= C.DEFAULT_MAX_SIZE) {
+                reason.* = "cardinality is too small for a bitmap container";
+                return false;
+            }
+            // Attempt to forcibly load the first and last words, hopefully causing
+            // a segfault or an address sanitizer error if words is not allocated.
+            // volatile uint64_t *words = v.words;
+
+            mem.doNotOptimizeAway(v.words[0]);
+            mem.doNotOptimizeAway(v.words[SIZE_IN_WORDS - 1]);
+            return true;
         }
 
         pub fn format(self: Self, w: *std.Io.Writer) !void {
@@ -668,3 +691,4 @@ const mem = std.mem;
 const Io = std.Io;
 const assert = std.debug.assert;
 const build_options = @import("build-options");
+const C = @import("constants.zig");

@@ -10,8 +10,8 @@ fn validateRoundTrip(allocator: mem.Allocator, name: []const u8, values: []const
         testing.expect(zr.contains(v)) catch |e| {
             const hb, const lb = [2]u16{ @truncate(v >> 16), @truncate(v) };
             std.debug.print("Bitmap missing value i {}, v {}:{x} hb/lb {}/{}:{x}/{x}, containers {}\n", .{ i, v, v, hb, lb, hb, lb, zr.high_low_container.kvs.len });
-            std.debug.print("hlc keys {any}\n", .{zr.high_low_container.kvs.items(.key)});
-            std.debug.print("values {any} index {}\n", .{ values, zr.get_index(v) });
+            std.debug.print("  keys {any}\n", .{zr.high_low_container.kvs.items(.key)});
+            std.debug.print("  values {any} index {}\n", .{ values, zr.get_index(v) });
             const vc = zr.high_low_container.kvs.items(.container)[@intCast(zr.get_index(v))];
             std.debug.print("  {any}\n", .{vc.const_cast(.array).slice()});
             // std.debug.print("{f}\n", .{zr});
@@ -146,8 +146,7 @@ fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []
     try testing.expect(zr.equals(zr_frozen));
 }
 
-fn validate() !void {
-    const allocator = testing.allocator;
+fn validate(allocator: mem.Allocator) !void {
     // Basic tests:
     try validateRoundTrip(allocator, "empty", &.{}, false);
     try validateRoundTrip(allocator, "single_zero", &.{0}, false);
@@ -239,7 +238,12 @@ fn validate() !void {
 }
 
 test validate {
-    try validate();
+    try validate(testing.allocator);
+}
+
+test "allocation failures" {
+    if (true) return error.SkipZigTest; // TODO
+    try testing.checkAllAllocationFailures(testing.allocator, validate, .{});
 }
 
 fn validateTestdata(filepath: []const u8) !void {

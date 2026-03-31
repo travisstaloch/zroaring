@@ -5,16 +5,17 @@ pub const Typecode = enum(u8) {
     bitset,
     array,
     run,
+    _,
 
     pub fn Type(comptime tc: Typecode) type {
         return switch (tc) {
-            inline else => |typecode| @FieldType(Container, @tagName(typecode)),
+            inline else => |typecode| @FieldType(ContainerData, @tagName(typecode)),
         };
     }
 
     pub fn fromType(comptime T: type) Typecode {
         inline for (@typeInfo(Typecode).@"enum".fields) |f| {
-            if (T == @FieldType(Container, f.name)) return @enumFromInt(f.value);
+            if (T == @FieldType(ContainerData, f.name)) return @enumFromInt(f.value);
         }
         @compileError("fromType() unexpected type: '" ++ @typeName(T) ++ "'");
     }
@@ -25,7 +26,7 @@ pub const Typecode = enum(u8) {
     }
 };
 
-const Container = union(Typecode) {
+const ContainerData = union(Typecode) {
     shared: root.SharedContainer,
     bitset: root.BitsetContainer,
     array: root.ArrayContainer,

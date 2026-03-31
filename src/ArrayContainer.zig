@@ -16,17 +16,19 @@ pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !ArrayContainer {
 pub fn init_range(allocator: mem.Allocator, min: u32, max: u32) !ArrayContainer {
     var answer = try init_with_capacity(allocator, max - min + 1);
     answer.cardinality = 0;
-    for (min..max) |k| {
+    var k = min;
+    while (k <= max) : (k += 1) {
         answer.array[answer.cardinality] = @intCast(k);
         answer.cardinality += 1;
     }
     return answer;
 }
 
-pub fn deinit(c: ArrayContainer, allocator: mem.Allocator) void {
-    // std.debug.print("ArrayContainer.deinit {} {}\n", .{ c.cardinality, c.capacity });
+pub fn deinit(c: *ArrayContainer, allocator: mem.Allocator) void {
+    // std.debug.print("ArrayContainer.deinit {*} {} {}\n", .{ c.array, c.cardinality, c.capacity });
     if (c.capacity == 0) return;
     allocator.free(c.array[0..c.capacity]);
+    c.* = .init;
 }
 
 pub fn slice(c: ArrayContainer) []align(ALIGNMENT) u16 {
@@ -60,9 +62,7 @@ pub fn read(container: *ArrayContainer, allocator: mem.Allocator, cardinality: u
 }
 
 /// Returns (found, index), if not found, index is where to insert x
-pub fn get_index(values: []const u16, x: u16) i32 {
-    return misc.binarySearch(values, x);
-}
+pub const get_index = misc.binarySearch;
 
 /// Add value to the set if final cardinality doesn't exceed max_cardinality.
 /// Returns an enum indicating if value was added, already present, or not
@@ -78,17 +78,19 @@ pub fn try_add(
     const card = c.cardinality;
     // best case, we can append.
     if ((card == 0 or value > c.array[card - 1]) and card < max_cardinality) {
-        // std.debug.print("value {}\n", .{value});
+        // std.debug.print("appending value {}\n", .{value});
         try c.append(allocator, value);
         return .added;
     }
 
-    const loc = misc.binarySearch(c.array[0 .. card - 1], value);
+    const loc = misc.binarySearch(c.array[0..card], value);
+    // std.debug.print("loc {}\n", .{loc});
     return if (loc >= 0)
         .already_present
     else if (c.cardinality < max_cardinality) blk: {
         if (c.full()) try c.grow(allocator, c.capacity + 1, true);
         const insert_idx: u32 = @intCast(-loc - 1);
+        // std.debug.print("inserting {} {any}\n", .{ value, c.slice() });
         @memmove(
             c.array + insert_idx + 1,
             (c.array + insert_idx)[0 .. c.cardinality - insert_idx],
@@ -116,13 +118,18 @@ pub fn grow(c: *ArrayContainer, allocator: mem.Allocator, min: u32, preserve: bo
     const max: u32 = @min(C.DEFAULT_MAX_SIZE, C.MAX_CONTAINERS);
     const new_capacity = std.math.clamp(grow_capacity(c.capacity), min, max);
     const array = c.array[0..c.capacity];
-    c.capacity = new_capacity;
+    errdefer c.* = .init; // FIXME - this shouldn't be necessary right?
 
     if (preserve) {
-        c.array = (try allocator.realloc(array, @max(c.capacity, new_capacity))).ptr;
+        const maxcap = @max(c.capacity, new_capacity);
+        const newarray = try allocator.realloc(array, maxcap);
+        c.array = newarray.ptr;
+        c.capacity = maxcap;
     } else {
         allocator.free(array);
-        c.array = (try allocator.alignedAlloc(u16, .fromByteUnits(ALIGNMENT), new_capacity)).ptr;
+        const newarray = try allocator.alignedAlloc(u16, .fromByteUnits(ALIGNMENT), new_capacity);
+        c.array = newarray.ptr;
+        c.capacity = new_capacity;
     }
 }
 
@@ -182,7 +189,7 @@ pub fn add_from_range(arr: *ArrayContainer, allocator: mem.Allocator, min: u32, 
 }
 
 pub fn equals(c1: ArrayContainer, c2: *const ArrayContainer) bool {
-    return c1.cardinality == c2.cardinality and mem.eql(u16, c1.slice(), c2.slice());
+    return mem.eql(u16, c1.slice(), c2.slice());
 }
 
 /// binary search with fallback to linear search for short ranges
@@ -241,6 +248,12 @@ pub fn number_of_runs(ac: *const ArrayContainer) u32 {
 ///
 pub fn serialized_size_in_bytes(card: u32) u32 {
     return card * @sizeOf(u16);
+}
+
+pub fn validate(ac: *const ArrayContainer, reason: *?[]const u8) bool {
+    _ = reason; // autofix
+    _ = ac; // autofix
+    unreachable;
 }
 
 pub const format = format2;

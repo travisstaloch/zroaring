@@ -3,7 +3,11 @@ const Array = @This();
 kvs: std.MultiArrayList(ContainerKV),
 flags: std.EnumSet(Flag),
 
-pub const ContainerKV = struct { key: u16, container: Container };
+pub const ContainerKV = struct {
+    container: Container,
+    key: u16,
+};
+
 pub const Flag = enum { cow, frozen };
 
 /// u13 by default.  smallest integer type which can hold DEFAULT_MAX_SIZE.
@@ -12,8 +16,8 @@ pub const Cardinality = std.math.IntFittingRange(0, C.DEFAULT_MAX_SIZE);
 pub const Element = u32; // TODO use Element instead of u32 throughout
 pub const Element2 = @Type(.{ // u32
     .int = .{
-        .bits = std.math.ceilPowerOfTwo(usize, @bitSizeOf(Cardinality) * 2) catch
-            unreachable, // max_cardinality too big
+        .bits = (std.math.ceilPowerOfTwo(usize, @bitSizeOf(Cardinality)) catch
+            unreachable) * 2, // Cardinality too big
         .signedness = .unsigned,
     },
 });
@@ -34,13 +38,14 @@ pub fn init_with_capacity(allocator: mem.Allocator, cap: u32) !Array {
 
 fn clear_containers(ra: *Array, allocator: mem.Allocator) void {
     for (0..ra.kvs.len) |i| {
+        // std.debug.print("{f}\n", .{ra.kvs.items(.container)[i]});
         ra.kvs.items(.container)[i].deinit(allocator);
     }
 }
 
 fn clear_without_containers(ra: *Array, allocator: mem.Allocator) void {
     ra.kvs.deinit(allocator);
-    ra.kvs.len = 0;
+    ra.* = .init;
 }
 
 pub fn clear(ra: *Array, allocator: mem.Allocator) void {
@@ -77,7 +82,13 @@ pub fn extend_array(ra: *Array, allocator: mem.Allocator, k: i32) !void {
     }
 }
 
-pub fn insert_new_key_value_at(ra: *Array, allocator: mem.Allocator, i: u32, key: u16, c: Container) !void {
+pub fn insert_new_key_value_at(
+    ra: *Array,
+    allocator: mem.Allocator,
+    i: u32,
+    key: u16,
+    c: Container,
+) !void {
     // std.debug.print("insert_new_key_value_at i {} key {} len/cap {}/{}\n", .{ i, key, ra.containers.len, ra.containers.capacity });
     // std.debug.print("  keys1 {any}\n", .{ra.containers.items(.key)});
     try ra.extend_array(allocator, 1);
@@ -193,7 +204,7 @@ pub fn portable_deserialize(
         return error.UnexpectedCookie;
 
     const size: u32 = if (cookie.magic == .SERIAL_COOKIE)
-        cookie.cardinality_minus1 + 1
+        @as(u32, cookie.cardinality_minus1) + 1
     else
         try r.takeInt(u32, .little);
     if (size > C.MAX_CONTAINERS)
@@ -207,14 +218,13 @@ pub fn portable_deserialize(
     }
     const keyscards = try r.readSliceEndianAlloc(tmp_allocator, u16, size * 2, .little);
     var answer = try init_with_capacity(allocator, size);
-    errdefer answer.deinit(allocator);
+    errdefer answer.kvs.deinit(allocator);
     // std.debug.print("keyscards {any}\n", .{keyscards});
     answer.kvs.len = size;
     for (0..size) |k| {
         const key = keyscards[k * 2];
         answer.kvs.items(.key)[k] = key;
     }
-    // std.debug.print("answer {f}\n", .{answer});
 
     if ((!hasrun) or (size >= C.NO_OFFSET_THRESHOLD)) {
         _ = try r.discard(.limited(size * 4)); // skip the offsets
@@ -246,13 +256,16 @@ pub fn portable_deserialize(
             answer.kvs.items(.container)[k] = try .create_from_value(allocator, c);
         } else {
             const c = try allocator.create(ArrayContainer);
+            errdefer allocator.destroy(c);
             c.* = try ArrayContainer.init_with_capacity(allocator, thiscard);
+            errdefer c.deinit(allocator);
             _ = try c.read(allocator, thiscard, r);
             // std.debug.print("ArrayContainer after read() {f}\n", .{c});
             assert(c.cardinality == thiscard);
             answer.kvs.items(.container)[k] = .init(c);
         }
     }
+    // std.debug.print("answer {f}\n", .{answer});
     return answer;
 }
 
