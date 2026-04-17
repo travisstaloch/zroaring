@@ -1,32 +1,33 @@
 //!
-//! An Roaring Bitmap implementation based on CRoaring.  Does not depend on libc.
+//! A Roaring Bitmap implementation inspired by CRoaring.
 //!  * https://github.com/RoaringBitmap/CRoaring
 //!  * https://github.com/RoaringBitmap/RoaringFormatSpec
 //!
 
 pub const zroaring = @This();
-pub const Bitmap = @import("Bitmap.zig");
-pub const Array = @import("Array.zig");
-const ctr = @import("container.zig");
-pub const Container = ctr.Container;
-pub const ArrayContainer = @import("ArrayContainer.zig");
-pub const BitsetContainer = ctr.BitsetContainer;
-pub const WordBitset = @import("WordBitset.zig").WordBitset;
-pub const RunContainer = @import("RunContainer.zig");
-pub const Rle16 = RunContainer.Rle16;
-pub const SharedContainer = ctr.SharedContainer;
-const types = @import("types.zig");
-pub const Typecode = types.Typecode;
-pub const Cookie = types.Cookie;
+pub const Bitmap = @import("Bitmap2.zig");
+
+pub const Magic = enum(u16) {
+    SERIAL_COOKIE_NO_RUNCONTAINER = 12346,
+    SERIAL_COOKIE = 12347,
+    FROZEN_COOKIE = 13766,
+    _,
+};
+
+/// # Cookie header
+/// The cookie header spans either 64 bits or 32 bits followed by a variable number of bytes.
+/// Magic cookie value that identifies the type of Roaring Bitmap format.
+/// 12346 (SERIAL_COOKIE_NO_RUNCONTAINER) means no run containers are used.
+/// 12347 (SERIAL_COOKIE) means run containers may be present.
+pub const Cookie = extern struct {
+    magic: Magic,
+    cardinality_minus1: u16,
+};
+
+pub const Rle16 = struct { value: u16, length: u16 };
 
 test {
-    _ = Container;
-    _ = Array;
-    _ = ArrayContainer;
     _ = Bitmap;
-    _ = BitsetContainer;
-    _ = RunContainer;
-    _ = SharedContainer;
     _ = @import("validate.zig");
-    _ = @import("fuzz.zig");
+    // _ = @import("fuzz.zig");
 }

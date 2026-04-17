@@ -55,7 +55,7 @@ const DataProvider = struct {
         min_value: u32,
         max_value: u32,
     ) !std.ArrayList(u32) {
-        var result = std.ArrayList(u32){};
+        var result = std.ArrayList(u32).empty;
         try result.resize(allocator, length);
         for (result.items) |*it| {
             it.* = fdp.ConsumeIntegralInRange(u32, min_value, max_value);
@@ -67,7 +67,7 @@ const DataProvider = struct {
 var gpa_buf: ?[]u8 = null;
 const gpa_buf_size = 100 * 1024 * 1024; // 100 Mb
 var gpa: mem.Allocator = undefined;
-var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = undefined;
+var gpa_state: std.heap.DebugAllocator(.{}) = undefined;
 fn oom() noreturn {
     @panic("OOM");
 }
@@ -75,7 +75,7 @@ fn oom() noreturn {
 export fn zig_fuzz_init() void {
     // init alloc_buf
     assert(gpa_buf == null);
-    gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+    gpa_state = .{};
     gpa = gpa_state.allocator();
     gpa_buf = gpa.alloc(u8, gpa_buf_size) catch oom();
 }
@@ -124,6 +124,7 @@ fn zig_fuzz_test1(data: []const u8) !void {
     // std.debug.print("bitmap_data_a {any}\n", .{bitmap_data_a});
     var a: Bitmap = .{};
     try a.add_many(alloc, bitmap_data_a.items);
+    if (true) unreachable; // TODO
     _ = try a.run_optimize(alloc);
 
     const bitmap_data_b = try fdp.ConsumeVecInRange(alloc, 500, 0, 1000);
@@ -142,6 +143,7 @@ fn zig_fuzz_test1(data: []const u8) !void {
 }
 
 fn bitmap32(data: []const u8) u8 {
+    if (true) unreachable; // TODO
     // We test that deserialization never fails.
     var r = std.Io.Reader.fixed(data);
     var bitmap = zroaring.Bitmap.portable_deserialize_safe(gpa, &r) catch return 0;

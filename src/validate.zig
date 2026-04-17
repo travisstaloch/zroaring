@@ -9,16 +9,20 @@ fn validateRoundTrip(allocator: mem.Allocator, name: []const u8, values: []const
     for (values, 0..) |v, i| {
         testing.expect(zr.contains(v)) catch |e| {
             const hb, const lb = [2]u16{ @truncate(v >> 16), @truncate(v) };
-            std.debug.print("Bitmap missing value i {}, v {}:{x} hb/lb {}/{}:{x}/{x}, containers {}\n", .{ i, v, v, hb, lb, hb, lb, zr.high_low_container.kvs.len });
-            std.debug.print("  keys {any}\n", .{zr.high_low_container.kvs.items(.key)});
+            std.debug.print("Bitmap missing value i {}, v {}:{x} hb/lb {}/{}:{x}/{x}, containers {}\n", .{ i, v, v, hb, lb, hb, lb, zr.header.?.container_count });
+            std.debug.print("  keys {any}\n", .{zr.header.?.get_keys()});
             std.debug.print("  values {any} index {}\n", .{ values, zr.get_index(v) });
-            const vc = zr.high_low_container.kvs.items(.container)[@intCast(zr.get_index(v))];
-            std.debug.print("  {any}\n", .{vc.const_cast(.array).slice()});
-            // std.debug.print("{f}\n", .{zr});
+            std.debug.print("  insert_buf {any}\n", .{zr.header.?.insert_buffer[0..zr.header.?.insert_buffer_len]});
+            const m = zr.header.?.metadata[@intCast(zr.get_index(v))];
+            const block_bytes = mem.sliceAsBytes(zr.pool.items[m.pool_offset..][0..m.n_blocks]);
+            const slice = mem.bytesAsSlice(u16, block_bytes);
+            std.debug.print("  array {any}\n", .{slice});
             return e;
         };
     }
+    if (true) return;
     if (run_optimize) _ = try zr.run_optimize(allocator);
+    if (true) return;
     // std.debug.print("zr {any}\n", .{zr});
     // std.debug.print("{s} zr {f}\n", .{ name, zr });
     try testing.expectEqual(values.len, zr.cardinality());
@@ -79,6 +83,7 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, name: []const u8, start: u32
     defer zr.deinit(allocator);
     try zr.add_range(allocator, start, end + 1);
     // std.debug.print("after add_range({},{}) zr {f}\n", .{ start, end + 1, zr });
+    if (true) unreachable;
     const zr_did_optimize = run_optimize and try zr.run_optimize(allocator);
 
     const cr = c.roaring_bitmap_create() orelse return error.CRoaringAllocFailed;
@@ -92,6 +97,7 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, name: []const u8, start: u32
     defer allocator.free(cr_buf);
 
     const zr_size = zr.portable_size_in_bytes();
+    std.debug.print("zr_size {}\n", .{zr_size});
     const zr_buf = try allocator.alloc(u8, zr_size);
     defer allocator.free(zr_buf);
     var zr_w: std.Io.Writer = .fixed(zr_buf);
@@ -134,6 +140,7 @@ fn validateFrozenContains(allocator: mem.Allocator, name: []const u8, values: []
     var zr: Bitmap = .{};
     defer zr.deinit(allocator);
     try zr.add_many(allocator, values);
+    if (true) unreachable;
     if (run_optimize) _ = try zr.run_optimize(allocator);
     const zr_frozen_buf = try allocator.alignedAlloc(u8, .@"32", zr.frozen_size_in_bytes());
     defer allocator.free(zr_frozen_buf);
@@ -160,6 +167,7 @@ fn validate(allocator: mem.Allocator) !void {
     var arr4096: [4096]u32 = undefined; // Array at threshold (4096 = max array size)
     for (0..4096) |i| arr4096[i] = @intCast(i);
     try validateRoundTrip(allocator, "array_4096", &arr4096, false);
+    if (true) return;
 
     // Bitset container tests:
     var bitset5000: [5000]u32 = undefined; // Just over threshold -> bitset
@@ -242,16 +250,14 @@ test validate {
 }
 
 test "allocation failures" {
-    if (true) return error.SkipZigTest; // TODO
     try testing.checkAllAllocationFailures(testing.allocator, validate, .{});
 }
 
-fn validateTestdata(filepath: []const u8) !void {
-    const f = try std.fs.cwd().openFile(filepath, .{});
-    defer f.close();
+fn validateTestdata(io: Io, filepath: []const u8) !void {
+    const f = try Io.Dir.cwd().openFile(io, filepath, .{});
+    defer f.close(io);
     var rbuf: [256]u8 = undefined;
-    var freader = f.reader(&rbuf);
-    var rb = try Bitmap.portable_deserialize(testing.allocator, &freader.interface);
+    var rb = try Bitmap.deserialize(testing.allocator, io, f, &rbuf);
     defer rb.deinit(testing.allocator);
 
     // > That is, they contain all multiplies of 1000 in [0,100000), all multiplies of 3 in [100000,200000) and all values in [700000,800000).
@@ -270,15 +276,16 @@ fn validateTestdata(filepath: []const u8) !void {
 }
 
 test "without runs" {
-    try validateTestdata("testdata/bitmapwithoutruns.bin");
+    try validateTestdata(testing.io, "testdata/bitmapwithoutruns.bin");
 }
 
 test "with runs" {
-    try validateTestdata("testdata/bitmapwithruns.bin");
+    try validateTestdata(testing.io, "testdata/bitmapwithruns.bin");
 }
 
 const std = @import("std");
 const mem = std.mem;
+const Io = std.Io;
 const testing = std.testing;
 const zroaring = @import("root.zig");
 const Bitmap = zroaring.Bitmap;

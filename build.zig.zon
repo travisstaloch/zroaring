@@ -2,7 +2,7 @@
     .name = .zroaring,
     .version = "0.0.1",
     .fingerprint = 0xd02d5a2babbace84, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .afl_kit = .{
             .url = "git+https://github.com/kristoff-it/zig-afl-kit#e8026e45fb8b7c62515e753a1911ba97b60c1d00",

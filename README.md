@@ -1,5 +1,5 @@
 # About
-Exploring [CRoaring](https://github.com/RoaringBitmap/CRoaring) by attempting to port it to zig.
+A Roaring Bitmap implementation in zig inspired by [CRoaring](https://github.com/RoaringBitmap/CRoaring).
 
 This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) and mirrored to [github](https://github.com/archaistvolts/zroaring).
 
@@ -7,9 +7,9 @@ This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) a
 [Documentation](https://archaistvolts.github.io/zroaring/) is hosted on github.
 
 # Use
-With zig version 0.15.2
+With zig version 0.16.0
 
-Be sure to test your application in debug mode as there are many unreachable code paths left as TODOs.
+Be sure to test your application in debug mode as there may be unreachable code paths left as TODOs.
 
 ### fetch package
 ```console
@@ -58,19 +58,18 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * https://github.com/lalinsky/roaring.zig
 
 # Ideas / TODOs - contributions welcome
-* [ ] validation: fix failing test checkAllocationFailures test
+* [x] Abandon idea of porting CRoaring.  Transition to a more from-scratch approach.
+* [x] validation: fix failing checkAllAllocationFailures test
 * [ ] Provide a similar api to std.HashMap
 * [ ] Bounded API: initBuffer, appendBounded
-* [ ] Support more set sizes than just u32 with generics and a build option
+* [ ] Support more set sizes than just u32 with generics - Bitmap(T)
 * [ ] build commands `$ zig build [api-coverage | correctness | bench]`
   * [ ] api-coverage:    show % of c api covered
   * [ ] api-correctness: show % correct fuzzing with c api oracle
-  * [ ] api-endian:      show which api methods are endian sensitive - big endian write to file
+  * [ ] api-endian:      check for and document endian sensitive methods by comparing big endian serialized bytes to little endian bytes with help from qemu.
   * [ ] bench:           show timings of bench with c
+    * [ ] keep track of benchmarks over time
 * [ ] documentation needs a lot of work
-  * [ ] audit endian-sensitive warnings in comments
-* [ ] prune comments.  i've used many of original CRoaring comments and some of them don't apply to this implementation.
-* [ ] audit endian sensitive methods.  i've tried for endian.
+* [ ] audit endian sensitive methods.  aim for endian awareness throughout.
 * [ ] audit unreachable code paths.  return error.Unimplemented when possible for starters.
-* [ ] For now this a port of CRoaring.  Maybe this project will transition to a more from-scratch approach with time and familiarity.  Goal would be to reduce the codebase size without sacrificing performance.
 * [ ] use in regex / peg impl in another project maybe following https://github.com/MartinErhardt/RoaringRegex

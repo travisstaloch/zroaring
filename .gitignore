@@ -3,4 +3,4 @@ zig-out/
 zig-pkg/
 .junk/
 afl/
-git-push.sh
+scripts/git-push.sh
