@@ -1,5 +1,3 @@
-pub const root = @cImport({
-    // @cDefine("CROARING_COMPILER_SUPPORTS_AVX512", "0");
-    @cDefine("CROARING_ATOMIC_IMPL", "1"); // 0.15.2 translate-c doesn't support atomics
-    @cInclude("c/roaring.h");
-});
+// TODO translate-c src/c/roaring.h when is resolved https://codeberg.org/ziglang/translate-c/issues/330
+
+pub const root = @import("c/roaring.zig");

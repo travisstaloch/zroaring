@@ -1,16 +1,21 @@
 const std = @import("std");
 const afl = @import("afl_kit");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const options = b.addOptions();
     options.addOption(bool, "trace", b.option(bool, "trace", "show debug trace output") orelse false);
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    // TODO // const translate_c = b.addTranslateC(.{ .root_source_file = b.path("c/roaring.h"), .target = target, .optimize = optimize });
+    // https://codeberg.org/ziglang/translate-c/issues/330
     const mod = b.addModule("zroaring", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "build-options", .module = options.createModule() }},
+        .imports = &.{
+            .{ .name = "build-options", .module = options.createModule() },
+        },
     });
 
     const use_llvm = b.option(bool, "llvm", "use llvm. false by default. needed when fuzzing by zig 0.15.2.") orelse false;
