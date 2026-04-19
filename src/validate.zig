@@ -176,13 +176,13 @@ fn validate(allocator: mem.Allocator) !void {
     var arr4096: [4096]u32 = undefined; // Array at threshold (4096 = max array size)
     for (0..4096) |i| arr4096[i] = @intCast(i);
     try validateRoundTrip(allocator, io, "array_4096", &arr4096, false);
-    if (true) return;
 
     // Bitset container tests:
     var bitset5000: [5000]u32 = undefined; // Just over threshold -> bitset
     for (0..5000) |i| bitset5000[i] = @intCast(i);
     try validateRoundTrip(allocator, io, "bitset_5000", &bitset5000, false);
 
+    if (true) return;
     // Full chunk as run (65536 values) - CRoaring auto-optimizes to run, so we must too
     // (This tests run serialization, not bitset - renamed to avoid confusion)
     try validateRangeRoundTrip(allocator, "run_full_chunk", 0, 65535, true);

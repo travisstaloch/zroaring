@@ -13,16 +13,13 @@ comptime {
     assert(MAX_CONTAINERS == 1 << 16);
 }
 
-pub const BLOCK_LEN = std.simd.suggestVectorLength(u8).?;
+pub const BLOCK_LEN = std.simd.suggestVectorLength(u8).?; // 32
 pub const Block = @Vector(BLOCK_LEN, u8);
 pub const BLOCK_ALIGN = @alignOf(Block);
 pub const BLOCK_ALIGNMENT: std.mem.Alignment = .fromByteUnits(BLOCK_ALIGN);
 pub const Bitset = [1024]u64;
 pub const BITSET_BLOCKS = @divExact(@sizeOf(Bitset), @sizeOf(Block)); // 256
-pub const BLOCK_LEN32 = std.simd.suggestVectorLength(u32).?;
-pub const InsertBuffer = [BLOCK_LEN32]u32;
-pub const InsertVec = @Vector(BLOCK_LEN32, u32);
-pub const BlockMask32 = std.meta.Int(.unsigned, BLOCK_LEN32);
+pub const BLOCK_LEN16 = @divExact(BLOCK_LEN, 2); // 16
 
 const std = @import("std");
 const assert = std.debug.assert;
