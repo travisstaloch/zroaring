@@ -126,16 +126,16 @@ fn zig_fuzz_test1(data: []const u8) !void {
     const bitmap_data_a = try fdp.ConsumeVecInRange(alloc, 500, 0, 1000);
     // std.debug.print("bitmap_data_a {any}\n", .{bitmap_data_a});
     var a: Bitmap = .empty;
-    try a.add_many(alloc, bitmap_data_a.items);
+    _ = try a.add_many(alloc, bitmap_data_a.items);
     // if (true) unreachable; // TODO
     _ = try a.run_optimize(alloc);
 
     const bitmap_data_b = try fdp.ConsumeVecInRange(alloc, 500, 0, 1000);
     // std.debug.print("bitmap_data_b {any}\n", .{bitmap_data_b});
     var b: Bitmap = .empty;
-    try b.add_many(alloc, bitmap_data_b.items);
+    _ = try b.add_many(alloc, bitmap_data_b.items);
     _ = try b.run_optimize(alloc);
-    try b.add(alloc, fdp.ConsumeIntegralInRange(u32, range_start, range_end));
+    _ = try b.add(alloc, fdp.ConsumeIntegralInRange(u32, range_start, range_end));
     _ = try b.add_checked(alloc, fdp.ConsumeIntegralInRange(u32, range_start, range_end));
     const r0 = fdp.ConsumeIntegralInRange(u32, range_start, range_end);
     const r1 = fdp.ConsumeIntegralInRange(u32, range_start, range_end);
@@ -166,7 +166,7 @@ fn bitmap32(io: Io, data: []const u8) u8 {
             const i: u32 = @intCast(ii);
             if (!bitmap.contains(i)) {
                 cardinality += 1;
-                bitmap.add(gpa, i) catch return 0;
+                _ = bitmap.add(gpa, i) catch return 0;
             }
         }
         if (cardinality != bitmap.get_cardinality()) {

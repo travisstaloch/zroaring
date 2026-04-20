@@ -27,7 +27,7 @@ pub fn binarySearch(array: []const u16, ikey: u16) i32 {
 //
 // Good old binary search through rle data
 //
-pub fn interleavedBinarySearch(array: []const root.Rle16, ikey: u16) i32 {
+pub fn interleavedBinarySearch(array: []align(C.BLOCK_ALIGN) const root.Rle16, ikey: u16) i32 {
     var low: i32 = 0;
     var high = @as(i32, @intCast(array.len)) - 1;
     while (low <= high) {
@@ -74,7 +74,7 @@ pub fn count_less(array: []const u16, ikey: u16) u32 {
 /// are less than the key.
 /// Note that [5,6,7,8] can be merged with the key 9 and won't be counted.
 ///
-pub fn rle16_count_less(array: []const root.Rle16, key: u16) u32 {
+pub fn rle16_count_less(array: []align(C.BLOCK_ALIGN) const root.Rle16, key: u16) u32 {
     if (array.len == 0) return 0;
     var low: i32 = 0;
     var high = @as(i32, @intCast(array.len)) - 1;
@@ -94,7 +94,7 @@ pub fn rle16_count_less(array: []const root.Rle16, key: u16) u32 {
     return @intCast(low);
 }
 
-pub fn rle16_count_greater(array: []const root.Rle16, key: u16) u32 {
+pub fn rle16_count_greater(array: []align(C.BLOCK_ALIGN) const root.Rle16, key: u16) u32 {
     if (array.len == 0) return 0;
     var low: i32 = 0;
     var high = @as(i32, @intCast(array.len)) - 1;
@@ -118,5 +118,40 @@ pub fn cast(T: type, i: anytype) T {
     return @intCast(i);
 }
 
+/// convert other_slice to Slice with pointer attributes
+pub fn asSlice(Slice: type, other_slice: anytype) Slice {
+    return std.mem.bytesAsSlice(std.meta.Child(Slice), std.mem.sliceAsBytes(other_slice));
+}
+
+pub fn fieldTypes(
+    comptime Header: type,
+) *const [@typeInfo(Header).@"struct".fields.len]type {
+    const fs = @typeInfo(Header).@"struct".fields;
+    comptime var ret: [fs.len]type = undefined;
+    for (fs, &ret) |f, *r| r.* = f.type;
+    return &ret;
+}
+
+pub fn trace(T: type, method_name: []const u8, comptime fmt: []const u8, args: anytype) void {
+    if (@import("build-options").trace) {
+        var buffer: [64]u8 = undefined;
+        const stderr = std.debug.lockStderr(&buffer);
+        defer std.debug.unlockStderr();
+        var term = stderr.terminal();
+        term.mode = .escape_codes;
+        term.setColor(.yellow) catch {};
+        term.writer.print("{s}", .{@typeName(T)}) catch {};
+        term.setColor(.white) catch {};
+        term.writer.print(".", .{}) catch {};
+        term.setColor(.yellow) catch {};
+        term.writer.print("{s}()", .{method_name}) catch {};
+        term.setColor(.white) catch {};
+        term.writer.print(" : ", .{}) catch {};
+        term.writer.print(fmt, args) catch {};
+        term.writer.print("\n", .{}) catch {};
+    }
+}
+
 const std = @import("std");
 const root = @import("root.zig");
+const C = root.constants;

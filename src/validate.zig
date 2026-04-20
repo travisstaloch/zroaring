@@ -5,7 +5,7 @@ fn validateRoundTrip(allocator: mem.Allocator, io: Io, name: []const u8, values:
     // build zroaring bitmap
     var zr: Bitmap = .empty;
     defer zr.deinit(allocator);
-    try zr.add_many(allocator, values);
+    _ = try zr.add_many(allocator, values);
     for (values, 0..) |v, i| {
         testing.expect(zr.contains(v)) catch |e| {
             const hb, const lb = [2]u16{ @truncate(v >> 16), @truncate(v) };

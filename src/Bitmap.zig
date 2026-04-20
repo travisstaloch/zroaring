@@ -2,11 +2,8 @@ const Bitmap = @This();
 
 header: Header,
 pool: std.ArrayList(root.Block),
-flags: std.EnumSet(Flag) = .empty,
 
 pub const empty: Bitmap = .{ .header = mem.zeroes(Header), .pool = .empty };
-
-pub const Flag = enum { cow, frozen };
 
 pub const KeyCard = extern struct { key: u16, cardinality_minus1: u16 };
 
@@ -30,10 +27,12 @@ const Container = packed struct(u64) {
     pub const size_in_bytes = serialized_size_in_bytes;
 };
 
+pub const Flag = enum(u8) { cow, frozen };
+
 /// Designed for frequent updates.
-/// Fields are ordered by decreasing alignment to reduce size.
-/// All slices are allocated from a single allocation of length `buffer_size()`.
-const Header = extern struct {
+/// Fields ordered by decreasing alignment to reduce size.
+/// All slices share a single allocation of length `buffer_size()`.
+pub const Header = extern struct {
     /// of length `(container_count+7)/8` when runs are present, otherwise 0.
     run_flags: ?[*]u8,
     /// keys from `descriptive_header`.  of length `container_count`.
@@ -44,11 +43,13 @@ const Header = extern struct {
     containers: [*]Container,
     /// file position where header data ends and container data starts.  set during
     /// deserialization.
-    container_startpos: u64, // TODO remove, calc when needed?
+    container_startpos: u64, // TODO remove, calc when needed.  always eql portable_header_size()
     container_count: u32,
-    /// number of SIMD-register sized blocks in the pool.
+    /// number of blocks in the pool.
     n_blocks: u32,
     magic: root.Magic,
+    /// std.EnumSet(Flag) but extern
+    flags: u8,
 
     pub const ALIGNMENT: mem.Alignment = .fromByteUnits(@alignOf(Header));
 
@@ -59,7 +60,6 @@ const Header = extern struct {
         else
             @ptrCast(@alignCast(h.keys));
         const buf = ptr.?[0..h.buffer_size()];
-        // std.debug.print("buf.len {} {*}\n", .{ buf.len, buf.ptr });
         allocator.free(buf);
     }
 
@@ -127,17 +127,17 @@ const Header = extern struct {
     pub fn buffer_size_from_file(io: Io, bitmap_file: Io.File) !Info {
         var read_buf: [8]u8 = undefined;
         var freader = bitmap_file.reader(io, &read_buf);
-        return buffer_size_from_file_reader(&freader);
+        return header_info_from_file_reader(&freader);
     }
 
-    const Info = struct {
+    pub const Info = struct {
         buffer_size: usize,
         cookie: root.Cookie,
         container_count: u32,
     };
 
     /// advances `freader` by 4 bytes or 8 bytes when there are runs
-    pub fn buffer_size_from_file_reader(freader: *Io.File.Reader) !Info {
+    pub fn header_info_from_file_reader(freader: *Io.File.Reader) !Info {
         assert(freader.logicalPos() == 0);
         const r = &freader.interface;
         const cookie = try r.takeStruct(root.Cookie, .little);
@@ -157,13 +157,12 @@ const Header = extern struct {
         };
     }
 
-    /// includes @sizeOf(Header).
-    /// tricky because we simulate the behavior of a fixed buffer allocator,
-    /// aligning forward.  Order matters.  must be synced with Header.deserialize().
+    /// Simulates the behavior of a fixed buffer allocator, aligning forward.
+    /// Order matters. must be synced with Header.deserialize().
     /// TODO - discarding writer or some simpler way than this?
     pub fn buffer_size_from_magic_count(magic: root.Magic, container_count: u32) usize {
-        const hasruns = magic == .SERIAL_COOKIE;
         var ret: usize = 0;
+        const hasruns = magic == .SERIAL_COOKIE;
         // run_flags
         if (hasruns) ret += (container_count + 7) / 8;
         // keys
@@ -174,6 +173,7 @@ const Header = extern struct {
         // if (!hasruns or (hasruns and container_count >= C.NO_OFFSET_THRESHOLD)) {
         //     ret = mem.alignForward(usize, ret + @sizeOf(u32) * container_count, @alignOf(u32));
         // }
+
         // containers
         ret = mem.alignForward(usize, ret + @sizeOf(Container) * container_count, @alignOf(Container));
         return ret;
@@ -189,12 +189,12 @@ const Header = extern struct {
     }
 
     pub fn deserialize_from_file_reader(allocator: mem.Allocator, freader: *Io.File.Reader) !Header {
-        const info = try Header.buffer_size_from_file_reader(freader);
+        const info = try Header.header_info_from_file_reader(freader);
         const header_buf = try allocator.alloc(u8, info.buffer_size);
         const r = &freader.interface;
         errdefer allocator.free(header_buf);
         var fba = std.heap.FixedBufferAllocator.init(header_buf);
-        const bufalloc = fba.allocator();
+        const fbaa = fba.allocator();
 
         var ret: Header = mem.zeroes(Header);
 
@@ -203,15 +203,15 @@ const Header = extern struct {
         assert(cookie.magic == .SERIAL_COOKIE or cookie.magic == .SERIAL_COOKIE_NO_RUNCONTAINER);
 
         ret.container_count = info.container_count;
-        assert(ret.container_count <= C.MAX_CONTAINERS); // data must be corrupted
+        assert(ret.container_count <= C.MAX_KEY_CARDINALITY); // data must be corrupted
 
         const hasruns = cookie.magic == .SERIAL_COOKIE;
 
         if (hasruns) {
-            ret.run_flags = (try r.readAlloc(bufalloc, (ret.container_count + 7) / 8)).ptr;
+            ret.run_flags = (try r.readAlloc(fbaa, (ret.container_count + 7) / 8)).ptr;
         }
-        ret.keys = (try bufalloc.alloc(u16, ret.container_count)).ptr;
-        ret.cardinalities = (try bufalloc.alloc(u32, ret.container_count)).ptr;
+        ret.keys = (try fbaa.alloc(u16, ret.container_count)).ptr;
+        ret.cardinalities = (try fbaa.alloc(u32, ret.container_count)).ptr;
         for (0..ret.container_count) |i| { // TODO maybe read N key_cards at a time, less looping here
             const kc = try r.takeStruct(KeyCard, .little);
             ret.keys[i] = kc.key;
@@ -222,7 +222,7 @@ const Header = extern struct {
         if (!hasruns or (hasruns and ret.container_count >= C.NO_OFFSET_THRESHOLD))
             _ = try r.discard(.limited(ret.container_count * @sizeOf(u32)));
 
-        ret.containers = (try bufalloc.alloc(Container, ret.container_count)).ptr;
+        ret.containers = (try fbaa.alloc(Container, ret.container_count)).ptr;
 
         ret.container_startpos = freader.logicalPos();
         assert(ret.container_startpos == ret.portable_size());
@@ -258,13 +258,7 @@ const Header = extern struct {
 
 test Header {
     // check Header has same size as an auto layout, HeaderAuto.
-    const header_field_types = comptime blk: {
-        const fs = @typeInfo(Header).@"struct".fields;
-        var ret: [fs.len]type = undefined;
-        for (fs, &ret) |f, *r| r.* = f.type;
-        break :blk &ret;
-    };
-    const HeaderAuto = @Struct(.auto, null, std.meta.fieldNames(Header), header_field_types, &@splat(.{}));
+    const HeaderAuto = @Struct(.auto, null, std.meta.fieldNames(Header), misc.fieldTypes(Header), &@splat(.{}));
     try testing.expectEqual(@sizeOf(Header), @sizeOf(HeaderAuto));
     try testing.expectEqual(56, @sizeOf(Header));
 
@@ -333,9 +327,8 @@ pub fn portable_deserialize(
             const n_runs: u32 = try r.takeInt(u16, .little);
             const blocks_size = mem.alignForward(u32, n_runs * 4, C.BLOCK_LEN);
             const n_blocks = @divExact(blocks_size, C.BLOCK_LEN);
-            const blocks_bytes = mem.sliceAsBytes(pool.items[pool_offset..][0..n_blocks]);
-            const run_slice = mem.bytesAsSlice(root.Rle16, blocks_bytes);
-            try r.readSliceEndian(root.Rle16, run_slice[0..n_runs], .little);
+            const runs = misc.asSlice([]align(C.BLOCK_ALIGN) root.Rle16, pool.items[pool_offset..][0..n_blocks]);
+            try r.readSliceEndian(root.Rle16, runs[0..n_runs], .little);
             header.containers[k] = .{
                 .pool_offset = pool_offset,
                 .n_blocks = @intCast(n_blocks),
@@ -346,9 +339,8 @@ pub fn portable_deserialize(
         } else { // array container
             const blocks_size = mem.alignForward(u32, thiscard * 2, C.BLOCK_LEN);
             const n_blocks = @divExact(blocks_size, C.BLOCK_LEN);
-            const blocks_bytes = mem.sliceAsBytes(pool.items[pool_offset..]);
-            const values = mem.bytesAsSlice(u16, blocks_bytes);
-            try r.readSliceEndian(u16, values[0..thiscard], .little);
+            const array = misc.asSlice([]align(C.BLOCK_ALIGN) u16, pool.items[pool_offset..]);
+            try r.readSliceEndian(u16, array[0..thiscard], .little);
             header.containers[k] = .{
                 .pool_offset = pool_offset,
                 .n_blocks = @intCast(n_blocks),
@@ -363,62 +355,68 @@ pub fn portable_deserialize(
 
     const ret = Bitmap{ .header = header, .pool = pool };
 
-    // FIXME - portable_size_in_bytes() doesn't match logicalPos on testdatawithruns - 48056 48050
-    // std.debug.print("{} {}\n", .{ freader.logicalPos(), ret.portable_size_in_bytes() });
-    assert(true or freader.logicalPos() == ret.portable_size_in_bytes()); // FIXME
+    // FIXME - portable_size_in_bytes() doesn't match logicalPos() on testdatawithruns - 48056 48050
+    if (freader.logicalPos() != ret.portable_size_in_bytes()) {
+        // misc.trace(@This(), "portable_deserialize", "Error: readerpos={} portablesize={}", .{ freader.logicalPos(), ret.portable_size_in_bytes() });
+        // FIXME // assert(false);
+    }
     return ret;
 }
 
-pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !void {
-    // std.debug.print("-- add_many() - vals {any} container_count {}\n", .{ vals[0..@min(6, vals.len)], r.header.container_count });
-
+/// returns count of `vals` added
+pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !usize {
+    // misc.trace(@This(), "add_many", "vals {?}..{?}:{} container_count {}", .{ if (vals.len > 0) vals[0] else null, if (vals.len > 1) vals[vals.len - 1] else null, vals.len, r.header.container_count });
+    var ret: usize = 0;
     for (vals) |v| {
-        try r.add(allocator, v);
+        ret += @intFromBool(try r.add_checked(allocator, v));
     }
+    return ret;
 }
 
+/// returns true when `val` was added to the bitmap, false if already present.
 pub fn add(r: *Bitmap, allocator: mem.Allocator, val: u32) !void {
     _ = try r.add_checked(allocator, val);
 }
 
-pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
-    const key: u16, const v: u16 = .{ @truncate(val >> 16), @truncate(val) };
+pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
+    const key: u16, const valuelow: u16 = .{ @truncate(value >> 16), @truncate(value) };
     const mcontaineridx = misc.binarySearch(r.header.get_keys(), key);
     if (mcontaineridx >= 0) { // key found
         const containeridx: u32 = @intCast(mcontaineridx);
         const card = r.header.get_cards()[containeridx];
         const c = r.header.containers[containeridx];
         assert(c.n_blocks <= 256);
-        const block_bytes = mem.sliceAsBytes(r.pool.items[c.pool_offset..][0..c.n_blocks]);
+        const bytes = mem.sliceAsBytes(r.pool.items[c.pool_offset..][0..c.n_blocks]);
 
         if (c.typecode == .bitset) {
-            const wordidx, const idx = .{ val / 64, val % 64 };
-            const bitset_values = mem.bytesAsSlice(u64, block_bytes);
+            const wordidx, const idx = .{ value / 64, value % 64 };
+            const bitset_values = mem.bytesAsSlice(u64, bytes);
             const found = bitset_values[wordidx] & @as(u64, 1) << @intCast(idx) != 0;
             if (!found) {
                 bitset_values[wordidx] |= @as(u64, 1) << @intCast(idx);
                 r.header.cardinalities[containeridx] += 1;
+                return true;
             }
-            return !found;
+            return false;
         } else if (c.typecode == .array) {
             assert(card <= 4096);
-            const values = mem.bytesAsSlice(u16, block_bytes);
-            const valuesidx = misc.binarySearch(values[0..card], v);
+            const values = mem.bytesAsSlice(u16, bytes);
+            const valuesidx = misc.binarySearch(values[0..card], valuelow);
             // std.debug.print("key found card {} found idx {} containers {}\n", .{ card, valuesidx, m });
             if (valuesidx < 0) { // value not found
                 if (card == 4096) { // array container full, promote to bitset
                     if (c.pool_offset + c.n_blocks == r.pool.items.len) { // last block, append/overwrite ok
                         const pool_offset = r.pool.items.len;
-                        const bblocks = try r.pool.addManyAsSlice(allocator, C.BITSET_BLOCKS);
-                        @memset(bblocks, @splat(0));
-                        const bvalues = mem.bytesAsSlice(u64, mem.sliceAsBytes(bblocks));
-                        const abytes = mem.sliceAsBytes(r.pool.items[c.pool_offset..][0..c.n_blocks]); // avoids stale `values` pointer
-                        for (mem.bytesAsSlice(u16, abytes)) |arrval| {
-                            const wordidx, const idx = .{ arrval / 64, arrval % 64 };
-                            bvalues[wordidx] |= @as(u64, 1) << @intCast(idx);
+                        const newblocks = try r.pool.addManyAsSlice(allocator, C.BITSET_BLOCKS);
+                        @memset(newblocks, @splat(0));
+                        const bitset = misc.asSlice([]align(C.BLOCK_ALIGN) u64, newblocks);
+                        // values may be invalidated - read values again
+                        for (misc.asSlice([]align(C.BLOCK_ALIGN) const u16, r.pool.items[c.pool_offset..][0..c.n_blocks])) |val| {
+                            const wordidx, const idx = .{ val / 64, val % 64 };
+                            bitset[wordidx] |= @as(u64, 1) << @intCast(idx);
                         }
-                        const wordidx, const idx = .{ val / 64, val % 64 };
-                        bvalues[wordidx] |= @as(u64, 1) << @intCast(idx);
+                        const wordidx, const idx = .{ value / 64, value % 64 };
+                        bitset[wordidx] |= @as(u64, 1) << @intCast(idx);
                         r.header.cardinalities[containeridx] = 4097;
                         r.header.containers[containeridx] = .{
                             .typecode = .bitset,
@@ -426,8 +424,7 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
                             .pool_offset = c.pool_offset,
                             .n_runs = undefined,
                         };
-                        // std.debug.print("c (po {} nb {}) new pool_offset {} {}\n", .{ c.pool_offset, c.n_blocks, pool_offset, C.BITSET_BLOCKS });
-                        @memcpy( // replace array blocks with bitset blocks
+                        @memcpy( // overwrite array blocks with bitset blocks
                             r.pool.items[c.pool_offset..][0..C.BITSET_BLOCKS],
                             r.pool.items[pool_offset..][0..C.BITSET_BLOCKS],
                         );
@@ -436,17 +433,16 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
                         unreachable; // TODO
                     }
                 } else if (card < @as(u32, c.n_blocks) * C.BLOCK_LEN16) { // room in block
-                    // std.debug.print("card {} {any}\n", .{ card, values });
-                    values[@intCast(-valuesidx - 1)] = v;
+                    values[@intCast(-valuesidx - 1)] = valuelow;
                     r.header.get_cards()[containeridx] += 1;
                 } else { // container blocks full, add new block
                     if (c.pool_offset + c.n_blocks == r.pool.items.len) { // last block, append ok
-                        // std.debug.print("adding block to container {} of blocks {}...{}\n", .{ key, m.pool_offset, m.pool_offset + m.n_blocks });
                         _ = try r.pool.addOne(allocator);
-                        const nblocks = r.pool.items[c.pool_offset..][0 .. c.n_blocks + 1];
-                        const nblock_bytes = mem.sliceAsBytes(nblocks);
-                        const nvalues = mem.bytesAsSlice(u16, nblock_bytes);
-                        nvalues[@intCast(-valuesidx - 1)] = v;
+                        const newvalues = misc.asSlice(
+                            []align(C.BLOCK_ALIGN) u16,
+                            r.pool.items[c.pool_offset..][0 .. c.n_blocks + 1],
+                        );
+                        newvalues[@intCast(-valuesidx - 1)] = valuelow;
                         r.header.get_cards()[containeridx] += 1;
                         r.header.get_containers()[containeridx].n_blocks += 1;
                     } else { // move contaier blocks
@@ -458,7 +454,7 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
         }
         return false;
     } else { // key not found, add new array container
-        const j: u32 = @intCast(-mcontaineridx - 1);
+        const insertidx: u32 = @intCast(-mcontaineridx - 1);
         // std.debug.print("insert_value() - new container - j {} v {} container_count {}\n", .{ j, v, r.header.container_count });
 
         const buf_size = Header.buffer_size_from_magic_count(r.header.magic, r.header.container_count + 1);
@@ -480,33 +476,31 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
 
         // alloc/copy new keys, cards, containers
         const newkeys = try fbaa.alloc(u16, newh.container_count);
-        @memcpy(newkeys.ptr, r.header.keys[0..j]);
-        newkeys[j] = key;
-        @memcpy(newkeys.ptr + j + 1, r.header.keys[j..r.header.container_count]);
+        @memcpy(newkeys.ptr, r.header.keys[0..insertidx]);
+        newkeys[insertidx] = key;
+        @memcpy(newkeys.ptr + insertidx + 1, r.header.keys[insertidx..r.header.container_count]);
         // std.debug.print("newkeys {any}\n", .{newkeys});
         newh.keys = newkeys.ptr;
 
         newh.cardinalities = (try fbaa.alloc(u32, newh.container_count)).ptr;
-        @memcpy(newh.cardinalities, r.header.cardinalities[0..j]);
-        newh.cardinalities[j] = 1;
-        @memcpy(newh.cardinalities + j + 1, r.header.cardinalities[j..r.header.container_count]);
+        @memcpy(newh.cardinalities, r.header.cardinalities[0..insertidx]);
+        newh.cardinalities[insertidx] = 1;
+        @memcpy(newh.cardinalities + insertidx + 1, r.header.cardinalities[insertidx..r.header.container_count]);
 
         newh.containers = (try fbaa.alloc(Container, newh.container_count)).ptr;
-        @memcpy(newh.containers, r.header.containers[0..j]);
-        newh.containers[j] = .{
+        @memcpy(newh.containers, r.header.containers[0..insertidx]);
+        newh.containers[insertidx] = .{
             .n_runs = undefined,
             .pool_offset = @intCast(r.pool.items.len),
             .n_blocks = 1,
             .typecode = .array,
         };
-        @memcpy(newh.containers + j + 1, r.header.containers[j..r.header.container_count]);
+        @memcpy(newh.containers + insertidx + 1, r.header.containers[insertidx..r.header.container_count]);
 
         const block = try r.pool.addOne(allocator);
         const block_bytes = mem.asBytes(block);
         const values = mem.bytesAsSlice(u16, block_bytes);
-        values[0] = v;
-        // std.debug.print("newh {}\n", .{newh.*});
-        // std.debug.print("newh keys {any}\n", .{newh.get_keys()});
+        values[0] = valuelow;
         r.header.deinit(allocator);
         r.header = newh;
 
@@ -575,12 +569,10 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     }
 }
 
-const u32_max = std.math.maxInt(u32);
-///
 /// Add all values in range [min, max)
 pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u64, max: u64) !void {
-    // std.debug.print("add_range({},{})\n", .{ min, max });
-    if (max <= min or min > @as(u64, u32_max) + 1) {
+    misc.trace(@This(), "add_range", "{} {}", .{ min, max });
+    if (max <= min or min > C.MAX_VALUE_CARDINALITY) {
         return;
     }
     try r.add_range_closed(allocator, @intCast(min), @intCast(max - 1));
@@ -596,32 +588,31 @@ pub fn contains(r: Bitmap, val: u32) bool {
     const iu: u32 = @bitCast(i);
 
     // rest might be a tad expensive, possibly involving another round of binary search
-    const m = h.get_containers()[iu];
-    // std.debug.print("{}\n", .{m});
+    const c = h.get_containers()[iu];
+
     const card: u32 = h.cardinalities[iu];
     const pos: u16 = @truncate(val);
-    switch (m.typecode) {
+    switch (c.typecode) {
         .bitset => {
             const word_idx = pos / 64;
             const bit_idx = pos % 64;
-            const bitset: *root.Bitset = @ptrCast(&r.pool.items[m.pool_offset]);
+            const bitset: *root.Bitset = @ptrCast(&r.pool.items[c.pool_offset]);
             return (bitset[word_idx] & (@as(u64, 1) << @intCast(bit_idx))) != 0;
         },
         .array => {
             const blocks_size = mem.alignForward(u32, card * 2, C.BLOCK_LEN);
             const n_blocks = @divExact(blocks_size, C.BLOCK_LEN);
-            const blocks_bytes = mem.sliceAsBytes(r.pool.items[m.pool_offset..][0..n_blocks]);
-            const values = mem.bytesAsSlice(u16, blocks_bytes);
-            const slice = values[0..card];
-            // std.debug.print("slice {any}\n", .{slice});
+            const values = misc.asSlice(
+                []align(C.BLOCK_ALIGN) const u16,
+                r.pool.items[c.pool_offset..][0..n_blocks],
+            )[0..card];
 
             // binary search with fallback to linear search for short ranges
             var low: i32 = 0;
             var high = @as(i32, @intCast(card));
             while (high >= low + 16) {
                 const middleIndex = (low + high) >> 1;
-                const middleValue = slice[@intCast(middleIndex)];
-                // std.debug.print("low {} high {} middleIndex {} middlevalue {}\n", .{ low, high, middleIndex, middleValue });
+                const middleValue = values[@intCast(middleIndex)];
                 if (middleValue < pos) {
                     low = middleIndex + 1;
                 } else if (middleValue > pos) {
@@ -633,25 +624,24 @@ pub fn contains(r: Bitmap, val: u32) bool {
 
             var j = low;
             while (j <= high) : (j += 1) {
-                const v = slice[@intCast(j)];
+                const v = values[@intCast(j)];
                 if (v == pos) return true;
                 if (v > pos) return false;
             }
             return false;
         },
         .run => {
-            const blocks_size = mem.alignForward(u32, @as(u32, m.n_runs) * @sizeOf(root.Rle16), C.BLOCK_LEN);
+            const blocks_size = mem.alignForward(u32, @as(u32, c.n_runs) * @sizeOf(root.Rle16), C.BLOCK_LEN);
             const n_blocks = @divExact(blocks_size, C.BLOCK_LEN);
-            const blocks_bytes = mem.sliceAsBytes(r.pool.items[m.pool_offset..][0..n_blocks]);
-            const run_slice = mem.bytesAsSlice(root.Rle16, blocks_bytes);
-            const runs = run_slice[0..m.n_runs];
+            const run_slice = misc.asSlice([]align(C.BLOCK_ALIGN) const root.Rle16, r.pool.items[c.pool_offset..][0..n_blocks]);
+
+            const runs = run_slice[0..c.n_runs];
             var index = misc.interleavedBinarySearch(runs, pos);
             if (index >= 0) return true;
             index = -index - 2; // points to preceding value, possibly -1
             if (index != -1) { // possible match
                 const offset = pos - runs[@intCast(index)].value;
-                const le = runs[@intCast(index)].length;
-                if (offset <= le) return true;
+                if (offset <= runs[@intCast(index)].length) return true;
             }
             return false;
         },
@@ -872,7 +862,7 @@ fn array_number_of_runs(r: *Bitmap, c: *const Container) u32 {
 // TODO: split into run-  array-  and bitset-  subfunctions for sanity;
 // a few function calls won't really matter.
 pub fn convert_run_optimize(r: *Bitmap, c: *const Container, card: u32, allocator: mem.Allocator) !Container {
-    std.debug.print("convert_run_optimize() {t}\n", .{c.typecode});
+    misc.trace(@This(), "convert_run_optimize", "{t} card={}", .{ c.typecode, card });
     if (c.typecode == .run) {
         const newc = try r.convert_run_to_efficient_container(c, card, allocator);
         _ = newc; // autofix
@@ -1000,8 +990,7 @@ pub fn convert_run_to_efficient_container(r: *Bitmap, c: *const Container, card:
         else
             size_as_array_container;
     if (size_as_run_container <= min_size_non_run) { // no conversion
-        // return try .create(allocator, c.*);
-        unreachable; // TODO
+        return c.*;
     }
     if (card <= C.DEFAULT_MAX_SIZE) {
         unreachable; // TODO
@@ -1045,7 +1034,7 @@ pub fn convert_run_to_efficient_container(r: *Bitmap, c: *const Container, card:
 /// When setting this flag to false, if any containers are shared, they
 /// are unshared (cloned) immediately.
 pub fn get_copy_on_write(r: *const Bitmap) bool {
-    return r.flags.contains(.cow);
+    return r.header.flags & 1 << @intFromEnum(Flag.cow) != 0;
 }
 
 var reason_global: ?[]const u8 = null;
@@ -1076,7 +1065,7 @@ pub fn internal_validate(r: Bitmap, reason: ?*?[]const u8) bool {
     const reason1 = reason orelse &reason_global;
     reason1.* = null;
 
-    if (r.flags.intersectWith(.initMany(&.{ .cow, .frozen })).count() > 1) {
+    if (@popCount(r.header.flags) > 1) {
         reason1.* = "invalid flags";
         return false;
     }
@@ -1098,7 +1087,7 @@ pub fn internal_validate(r: Bitmap, reason: ?*?[]const u8) bool {
             reason1.* = "shared container in non-COW bitmap";
             return false;
         }
-        if (!r.cinternal_validate(c, reason1)) {
+        if (!r.internal_validate_container(c, reason1)) {
             // reason should already be set
             if (reason1.* == null) {
                 reason1.* = "container failed to validate but no reason given";
@@ -1110,7 +1099,7 @@ pub fn internal_validate(r: Bitmap, reason: ?*?[]const u8) bool {
     return true;
 }
 
-pub fn cinternal_validate(r: Bitmap, container: *const Container, reason: *?[]const u8) bool {
+pub fn internal_validate_container(r: Bitmap, container: *const Container, reason: *?[]const u8) bool {
     const containeridx = container - r.header.containers;
 
     if (r.header.cardinalities[containeridx] == 0) {
