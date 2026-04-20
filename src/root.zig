@@ -5,7 +5,11 @@
 //!
 
 pub const zroaring = @This();
-pub const Bitmap = @import("Bitmap2.zig");
+
+pub const Bitmap = @import("Bitmap.zig");
+pub const Block = @Vector(constants.BLOCK_LEN, u8);
+pub const Bitset = [1024]u64;
+pub const constants = @import("constants.zig");
 
 pub const Magic = enum(u16) {
     SERIAL_COOKIE_NO_RUNCONTAINER = 12346,

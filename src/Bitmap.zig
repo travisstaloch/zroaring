@@ -1,7 +1,7 @@
 const Bitmap = @This();
 
 header: Header,
-pool: std.ArrayList(C.Block),
+pool: std.ArrayList(root.Block),
 
 pub const empty: Bitmap = .{ .header = mem.zeroes(Header), .pool = .empty };
 
@@ -19,7 +19,7 @@ const Container = packed struct(u64) {
         return switch (c.typecode) {
             .array => @sizeOf(u16) * card,
             .run => @sizeOf(u16) + @sizeOf(root.Rle16) * c.n_runs,
-            .bitset => @sizeOf(C.Bitset),
+            .bitset => @sizeOf(root.Bitset),
             .shared => unreachable,
         };
     }
@@ -112,7 +112,7 @@ const Header = extern struct {
         for (h.get_containers(), 0..) |c, i| {
             count += switch (c.typecode) {
                 .array => h.cardinalities[i] * 2,
-                .bitset => @sizeOf(C.Bitset),
+                .bitset => @sizeOf(root.Bitset),
                 .run => @as(u32, c.n_runs) * 4,
                 .shared => unreachable, // TODO
             };
@@ -235,7 +235,7 @@ const Header = extern struct {
                 isrun = true;
             }
             if (isbitset) {
-                _ = try r.discard(.limited(@sizeOf(C.Bitset)));
+                _ = try r.discard(.limited(@sizeOf(root.Bitset)));
                 ret.n_blocks += C.BITSET_BLOCKS;
             } else if (isrun) {
                 const n_runs: u32 = try r.takeInt(u16, .little);
@@ -298,7 +298,7 @@ pub fn portable_deserialize(
     errdefer header.deinit(allocator);
 
     // allocate container data
-    var pool: std.ArrayList(C.Block) = try .initCapacity(allocator, header.n_blocks);
+    var pool: std.ArrayList(root.Block) = try .initCapacity(allocator, header.n_blocks);
     errdefer pool.deinit(allocator);
     pool.expandToCapacity();
 
@@ -592,7 +592,7 @@ pub fn contains(r: Bitmap, val: u32) bool {
         .bitset => {
             const word_idx = pos / 64;
             const bit_idx = pos % 64;
-            const bitset: *C.Bitset = @ptrCast(&r.pool.items[m.pool_offset]);
+            const bitset: *root.Bitset = @ptrCast(&r.pool.items[m.pool_offset]);
             return (bitset[word_idx] & (@as(u64, 1) << @intCast(bit_idx))) != 0;
         },
         .array => {
@@ -682,8 +682,8 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
             ),
             .bitset => mem.eql(
                 u64,
-                mem.bytesAsSlice(u64, c1bytes[0..@sizeOf(C.Bitset)]),
-                mem.bytesAsSlice(u64, c2bytes[0..@sizeOf(C.Bitset)]),
+                mem.bytesAsSlice(u64, c1bytes[0..@sizeOf(root.Bitset)]),
+                mem.bytesAsSlice(u64, c2bytes[0..@sizeOf(root.Bitset)]),
             ),
             .shared => unreachable,
         })
@@ -732,7 +732,7 @@ pub fn write(r: Bitmap, c: Container, card: u32, w: *Io.Writer) !usize {
             assert(c.n_blocks == C.BITSET_BLOCKS);
             const bytes = mem.sliceAsBytes(r.pool.items[c.pool_offset..][0..c.n_blocks]);
             try w.writeSliceEndian(u64, mem.bytesAsSlice(u64, bytes), .little);
-            return @sizeOf(C.Bitset);
+            return @sizeOf(root.Bitset);
         },
         .shared => unreachable,
     }
@@ -957,7 +957,7 @@ pub fn convert_run_to_efficient_container(r: *Bitmap, c: Container, card: u32, a
     assert(c.typecode == .run);
     const size_as_run_container = c.serialized_size_in_bytes(undefined);
 
-    const size_as_bitset_container = @sizeOf(C.Bitset);
+    const size_as_bitset_container = @sizeOf(root.Bitset);
 
     var ac: Container = undefined;
     ac.typecode = .array;
