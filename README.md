@@ -1,5 +1,5 @@
 # About
-A Roaring Bitmap implementation in zig inspired by [CRoaring](https://github.com/RoaringBitmap/CRoaring).
+A Roaring Bitmap implementation in zig inspired by [CRoaring](https://github.com/RoaringBitmap/CRoaring) and with a similar API.
 
 This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) and mirrored to [github](https://github.com/archaistvolts/zroaring).
 
@@ -58,7 +58,7 @@ Human contributions are very welcome.  Please open a pull request or issue on co
 * https://github.com/lalinsky/roaring.zig
 
 # Ideas / TODOs - contributions welcome
-* [x] Abandon idea of porting CRoaring.  Transition to a more from-scratch approach.
+* [x] Transition to a more from-scratch approach.  Don't try to follow CRoaring impl closely, but try to follow the API.
 * [x] validation: fix failing checkAllAllocationFailures test
 * [ ] Provide a similar api to std.HashMap
 * [ ] Bounded API: initBuffer, appendBounded
@@ -71,5 +71,5 @@ Human contributions are very welcome.  Please open a pull request or issue on co
     * [ ] keep track of benchmarks over time
 * [ ] documentation needs a lot of work
 * [ ] audit endian sensitive methods.  aim for endian awareness throughout.
-* [ ] audit unreachable code paths.  return error.Unimplemented when possible for starters.
+* [ ] audit unreachable code paths.  fuzzing will help.
 * [ ] use in regex / peg impl in another project maybe following https://github.com/MartinErhardt/RoaringRegex

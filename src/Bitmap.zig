@@ -2,8 +2,11 @@ const Bitmap = @This();
 
 header: Header,
 pool: std.ArrayList(root.Block),
+flags: std.EnumSet(Flag) = .empty,
 
 pub const empty: Bitmap = .{ .header = mem.zeroes(Header), .pool = .empty };
+
+pub const Flag = enum { cow, frozen };
 
 pub const KeyCard = extern struct { key: u16, cardinality_minus1: u16 };
 
@@ -374,8 +377,12 @@ pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !void {
     }
 }
 
-pub fn add(r: *Bitmap, allocator: mem.Allocator, v: u32) !void {
-    const key: u16, const val: u16 = .{ @truncate(v >> 16), @truncate(v) };
+pub fn add(r: *Bitmap, allocator: mem.Allocator, val: u32) !void {
+    _ = try r.add_checked(allocator, val);
+}
+
+pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, val: u32) !bool {
+    const key: u16, const v: u16 = .{ @truncate(val >> 16), @truncate(val) };
     const mcontaineridx = misc.binarySearch(r.header.get_keys(), key);
     if (mcontaineridx >= 0) { // key found
         const containeridx: u32 = @intCast(mcontaineridx);
@@ -385,17 +392,18 @@ pub fn add(r: *Bitmap, allocator: mem.Allocator, v: u32) !void {
         const block_bytes = mem.sliceAsBytes(r.pool.items[c.pool_offset..][0..c.n_blocks]);
 
         if (c.typecode == .bitset) {
-            const wordidx, const idx = .{ v / 64, v % 64 };
+            const wordidx, const idx = .{ val / 64, val % 64 };
             const bitset_values = mem.bytesAsSlice(u64, block_bytes);
             const found = bitset_values[wordidx] & @as(u64, 1) << @intCast(idx) != 0;
             if (!found) {
                 bitset_values[wordidx] |= @as(u64, 1) << @intCast(idx);
                 r.header.cardinalities[containeridx] += 1;
             }
+            return !found;
         } else if (c.typecode == .array) {
             assert(card <= 4096);
             const values = mem.bytesAsSlice(u16, block_bytes);
-            const valuesidx = misc.binarySearch(values[0..card], val);
+            const valuesidx = misc.binarySearch(values[0..card], v);
             // std.debug.print("key found card {} found idx {} containers {}\n", .{ card, valuesidx, m });
             if (valuesidx < 0) { // value not found
                 if (card == 4096) { // array container full, promote to bitset
@@ -409,7 +417,7 @@ pub fn add(r: *Bitmap, allocator: mem.Allocator, v: u32) !void {
                             const wordidx, const idx = .{ arrval / 64, arrval % 64 };
                             bvalues[wordidx] |= @as(u64, 1) << @intCast(idx);
                         }
-                        const wordidx, const idx = .{ v / 64, v % 64 };
+                        const wordidx, const idx = .{ val / 64, val % 64 };
                         bvalues[wordidx] |= @as(u64, 1) << @intCast(idx);
                         r.header.cardinalities[containeridx] = 4097;
                         r.header.containers[containeridx] = .{
@@ -429,7 +437,7 @@ pub fn add(r: *Bitmap, allocator: mem.Allocator, v: u32) !void {
                     }
                 } else if (card < @as(u32, c.n_blocks) * C.BLOCK_LEN16) { // room in block
                     // std.debug.print("card {} {any}\n", .{ card, values });
-                    values[@intCast(-valuesidx - 1)] = val;
+                    values[@intCast(-valuesidx - 1)] = v;
                     r.header.get_cards()[containeridx] += 1;
                 } else { // container blocks full, add new block
                     if (c.pool_offset + c.n_blocks == r.pool.items.len) { // last block, append ok
@@ -438,7 +446,7 @@ pub fn add(r: *Bitmap, allocator: mem.Allocator, v: u32) !void {
                         const nblocks = r.pool.items[c.pool_offset..][0 .. c.n_blocks + 1];
                         const nblock_bytes = mem.sliceAsBytes(nblocks);
                         const nvalues = mem.bytesAsSlice(u16, nblock_bytes);
-                        nvalues[@intCast(-valuesidx - 1)] = val;
+                        nvalues[@intCast(-valuesidx - 1)] = v;
                         r.header.get_cards()[containeridx] += 1;
                         r.header.get_containers()[containeridx].n_blocks += 1;
                     } else { // move contaier blocks
@@ -446,7 +454,9 @@ pub fn add(r: *Bitmap, allocator: mem.Allocator, v: u32) !void {
                     }
                 }
             }
+            return true;
         }
+        return false;
     } else { // key not found, add new array container
         const j: u32 = @intCast(-mcontaineridx - 1);
         // std.debug.print("insert_value() - new container - j {} v {} container_count {}\n", .{ j, v, r.header.container_count });
@@ -494,11 +504,13 @@ pub fn add(r: *Bitmap, allocator: mem.Allocator, v: u32) !void {
         const block = try r.pool.addOne(allocator);
         const block_bytes = mem.asBytes(block);
         const values = mem.bytesAsSlice(u16, block_bytes);
-        values[0] = val;
+        values[0] = v;
         // std.debug.print("newh {}\n", .{newh.*});
         // std.debug.print("newh keys {any}\n", .{newh.get_keys()});
         r.header.deinit(allocator);
         r.header = newh;
+
+        return true;
     }
 }
 
@@ -512,7 +524,7 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
     const max_key = max >> 16;
 
     const num_required_containers = max_key - min_key + 1;
-    const h = r.header orelse unreachable;
+    const h = r.header;
     const suffix_length = misc.count_greater(h.get_keys(), @truncate(max_key));
     const prefix_length = misc.count_less(
         h.get_keys()[0 .. h.container_count - suffix_length],
@@ -819,12 +831,12 @@ pub fn set_container_at_index(r: *Bitmap, i: u32, c: Container) void {
 /// Additional savings might be possible by calling `shrinkToFit()`.
 pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
     var answer = false;
-    for (r.header.get_containers(), r.header.get_cards(), 0..) |c, card, i| {
+    for (r.header.get_containers(), r.header.get_cards(), 0..) |*c, card, i| {
         // r.unshare_container_at_index(@intCast(i)); // TODO: this introduces extra cloning!
 
         const c1 = try r.convert_run_optimize(c, card, allocator);
         if (c1.typecode == .run) answer = true;
-        if (c != c1) {
+        if (c.* != c1) {
             // std.debug.print("run_optimize. converted {f} to {f}\n", .{ c, c1 });
             r.set_container_at_index(@intCast(i), c1);
         }
@@ -840,12 +852,26 @@ pub fn cardinality(r: Bitmap) u64 {
 }
 pub const get_cardinality = cardinality;
 
+fn array_number_of_runs(r: *Bitmap, c: *const Container) u32 {
+    // Can SIMD work here?
+    var nr_runs: u32 = 0;
+    var prev: i32 = -2;
+    const start: [*]u16 = @ptrCast(&r.pool.items[c.pool_offset]);
+    var p = start;
+    const card = r.header.cardinalities[c - r.header.containers];
+
+    while (p != start + card) : (p += 1) {
+        if (p[0] != prev + 1) nr_runs += 1;
+        prev = p[0];
+    }
+    return nr_runs;
+}
 /// once converted, the original container is disposed here, rather than
 /// in roaring_array
 ///
 // TODO: split into run-  array-  and bitset-  subfunctions for sanity;
 // a few function calls won't really matter.
-pub fn convert_run_optimize(r: *Bitmap, c: Container, card: u32, allocator: mem.Allocator) !Container {
+pub fn convert_run_optimize(r: *Bitmap, c: *const Container, card: u32, allocator: mem.Allocator) !Container {
     std.debug.print("convert_run_optimize() {t}\n", .{c.typecode});
     if (c.typecode == .run) {
         const newc = try r.convert_run_to_efficient_container(c, card, allocator);
@@ -854,17 +880,23 @@ pub fn convert_run_optimize(r: *Bitmap, c: Container, card: u32, allocator: mem.
         // return newc;
         unreachable;
     } else if (c.typecode == .array) {
-        unreachable;
+
         // // it might need to be converted to a run container.
         // const c_qua_array = c.const_cast(.array);
-        // const n_runs = c_qua_array.number_of_runs();
-        // const size_as_run_container = RunContainer.serialized_size_in_bytes(n_runs);
-        // const card = c_qua_array.cardinality;
-        // const size_as_array_container = ArrayContainer.serialized_size_in_bytes(card);
+        const n_runs = r.array_number_of_runs(c);
+        const rc: Container = .{
+            .typecode = .run,
+            .n_runs = @intCast(n_runs),
+            .n_blocks = undefined,
+            .pool_offset = undefined,
+        };
+        const size_as_run_container = rc.serialized_size_in_bytes(undefined);
+        const size_as_array_container = c.serialized_size_in_bytes(card);
 
-        // if (size_as_run_container >= size_as_array_container) {
-        //     return c;
-        // }
+        if (size_as_run_container >= size_as_array_container) {
+            return c.*;
+        }
+        unreachable;
         // // else convert array to run container
         // var answer = try RunContainer.init_with_capacity(allocator, n_runs);
         // var prev: i32 = -2;
@@ -944,14 +976,13 @@ pub fn convert_run_optimize(r: *Bitmap, c: Container, card: u32, allocator: mem.
     } else {
         unreachable;
     }
-    unreachable;
 }
 
 /// Converts a run container to either an array or a bitset, IF it saves space.
 ///
 /// If a conversion occurs, the caller is responsible to free the original
 /// container and he becomes responsible to free the new one.
-pub fn convert_run_to_efficient_container(r: *Bitmap, c: Container, card: u32, allocator: mem.Allocator) !Container {
+pub fn convert_run_to_efficient_container(r: *Bitmap, c: *const Container, card: u32, allocator: mem.Allocator) !Container {
     _ = r; // autofix
     _ = allocator; // autofix
     assert(c.typecode == .run);
@@ -1001,6 +1032,131 @@ pub fn convert_run_to_efficient_container(r: *Bitmap, c: Container, card: u32, a
     // }
     // answer.cardinality = card;
     // return .create(allocator, answer);
+}
+
+/// Whether you want to use copy-on-write.
+/// Saves memory and avoids copies, but needs more care in a threaded context.
+/// Most users should ignore this flag.
+///
+/// Note: If you do turn this flag to 'true', enabling COW, then ensure that you
+/// do so for all of your bitmaps, since interactions between bitmaps with and
+/// without COW is unsafe.
+///
+/// When setting this flag to false, if any containers are shared, they
+/// are unshared (cloned) immediately.
+pub fn get_copy_on_write(r: *const Bitmap) bool {
+    return r.flags.contains(.cow);
+}
+
+var reason_global: ?[]const u8 = null;
+///
+/// Perform internal consistency checks. Returns true if the bitmap is
+/// consistent. It may be useful to call this after deserializing bitmaps from
+/// untrusted sources. If internal_validate returns true, then the
+/// bitmap should be consistent and can be trusted not to cause crashes or memory
+/// corruption.
+///
+/// Note that some operations intentionally leave bitmaps in an inconsistent
+/// state temporarily, for example, `lazy_*` functions, until
+/// `repair_after_lazy` is called.
+///
+/// If reason is non-null, it will be set to a string describing the first
+/// inconsistency found if any.
+///
+/// Checks that:
+/// - Array containers are sorted and contain no duplicates
+/// - Range containers are sorted and contain no overlapping ranges
+/// - Roaring containers are sorted by key and there are no duplicate keys
+/// - The correct container type is use for each container (e.g. bitmaps aren't
+/// used for small containers)
+/// - Shared containers are only used when the bitmap is COW
+///
+/// Note: not thread safe - global
+pub fn internal_validate(r: Bitmap, reason: ?*?[]const u8) bool {
+    const reason1 = reason orelse &reason_global;
+    reason1.* = null;
+
+    if (r.flags.intersectWith(.initMany(&.{ .cow, .frozen })).count() > 1) {
+        reason1.* = "invalid flags";
+        return false;
+    }
+    if (r.header.container_count == 0) return true;
+
+    const keys = r.header.get_keys();
+    var prev_key = keys[0];
+    for (keys[1..]) |key| {
+        if (key <= prev_key) {
+            reason1.* = "keys not strictly increasing";
+            return false;
+        }
+        prev_key = key;
+    }
+
+    const cow = r.get_copy_on_write();
+    for (r.header.get_containers()) |*c| {
+        if (c.typecode == .shared and !cow) {
+            reason1.* = "shared container in non-COW bitmap";
+            return false;
+        }
+        if (!r.cinternal_validate(c, reason1)) {
+            // reason should already be set
+            if (reason1.* == null) {
+                reason1.* = "container failed to validate but no reason given";
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
+pub fn cinternal_validate(r: Bitmap, container: *const Container, reason: *?[]const u8) bool {
+    const containeridx = container - r.header.containers;
+
+    if (r.header.cardinalities[containeridx] == 0) {
+        reason.* = "container is empty";
+        return false;
+    }
+    // Not using container_unwrap_shared because it asserts if shared containers
+    // are nested
+    if (container.typecode == .shared) {}
+    switch (container.typecode) {
+        .shared => {
+            unreachable; // TODO
+            // const shared_container_t *shared_container =
+            //     const_CAST_shared(container);
+            // if (croaring_refcount_get(&shared_container->counter) == 0) {
+            //     reason.* = "shared container has zero refcount";
+            //     return false;
+            // }
+            // if (shared_container->typecode == shared) {
+            //     reason.* = "shared container is nested";
+            //     return false;
+            // }
+            // if (shared_container->container.is_null()) {
+            //     reason.* = "shared container has NULL container";
+            //     return false;
+            // }
+            // container = shared_container->container;
+            // typecode = shared_container->typecode;
+        },
+        .bitset => unreachable,
+        .array => unreachable,
+        .run => unreachable,
+        // return container.validate(reason),
+        //     bitset =>
+        //         return bitset_container_validate(const_CAST_bitset(container),
+        //                                          reason);
+        // array =>
+        //         return array_container_validate(const_CAST_array(container),
+        //                                         reason);
+        //         run =>
+        //         return run_container_validate(const_CAST_run(container), reason);
+        // _ => { // TODO?
+        //     reason.* = "invalid typecode";
+        //     return false;
+        // },
+    }
 }
 
 fn deserializeTestdataPortable(io: Io, f: Io.File) !Bitmap {

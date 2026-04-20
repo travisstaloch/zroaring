@@ -33,5 +33,5 @@ pub const Rle16 = struct { value: u16, length: u16 };
 test {
     _ = Bitmap;
     _ = @import("validate.zig");
-    // _ = @import("fuzz.zig");
+    _ = @import("fuzz.zig");
 }

@@ -3,13 +3,13 @@ const fuzz = @This();
 // `$ zig build test -Dllvm --fuzz`
 test fuzz { //
     zig_fuzz_init();
+    defer tmpdir.close(stio.io());
     const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            zig_fuzz_test(input.ptr, input.len);
+        fn testOne(_: @This(), smith: *testing.Smith) anyerror!void {
+            zig_fuzz_test(smith.in.?.ptr, smith.in.?.len);
         }
     };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
+    try testing.fuzz(Context{}, Context.testOne, .{});
 }
 
 const DataProvider = struct {
@@ -68,6 +68,8 @@ var gpa_buf: ?[]u8 = null;
 const gpa_buf_size = 100 * 1024 * 1024; // 100 Mb
 var gpa: mem.Allocator = undefined;
 var gpa_state: std.heap.DebugAllocator(.{}) = undefined;
+var stio = Io.Threaded.init_single_threaded;
+var tmpdir: Io.Dir = undefined;
 fn oom() noreturn {
     @panic("OOM");
 }
@@ -78,6 +80,7 @@ export fn zig_fuzz_init() void {
     gpa_state = .{};
     gpa = gpa_state.allocator();
     gpa_buf = gpa.alloc(u8, gpa_buf_size) catch oom();
+    tmpdir = Io.Dir.cwd().openDir(stio.io(), "/tmp", .{}) catch unreachable;
 }
 
 ///
@@ -102,7 +105,7 @@ export fn zig_fuzz_test(dataptr: [*]const u8, size: usize) void {
 }
 
 fn zig_fuzz_test1(data: []const u8) !void {
-    _ = bitmap32(data);
+    _ = bitmap32(stio.io(), data);
     const range_start: u32 = 0;
     const range_end: u32 = 10_000_000;
 
@@ -122,14 +125,14 @@ fn zig_fuzz_test1(data: []const u8) !void {
     const alloc = fba.allocator();
     const bitmap_data_a = try fdp.ConsumeVecInRange(alloc, 500, 0, 1000);
     // std.debug.print("bitmap_data_a {any}\n", .{bitmap_data_a});
-    var a: Bitmap = .{};
+    var a: Bitmap = .empty;
     try a.add_many(alloc, bitmap_data_a.items);
-    if (true) unreachable; // TODO
+    // if (true) unreachable; // TODO
     _ = try a.run_optimize(alloc);
 
     const bitmap_data_b = try fdp.ConsumeVecInRange(alloc, 500, 0, 1000);
     // std.debug.print("bitmap_data_b {any}\n", .{bitmap_data_b});
-    var b: Bitmap = .{};
+    var b: Bitmap = .empty;
     try b.add_many(alloc, bitmap_data_b.items);
     _ = try b.run_optimize(alloc);
     try b.add(alloc, fdp.ConsumeIntegralInRange(u32, range_start, range_end));
@@ -142,11 +145,16 @@ fn zig_fuzz_test1(data: []const u8) !void {
     // std.log.debug("{} data_b {any} {f}\n", .{ size, bitmap_data_b.items, b });
 }
 
-fn bitmap32(data: []const u8) u8 {
-    if (true) unreachable; // TODO
+fn bitmap32(io: Io, data: []const u8) u8 {
     // We test that deserialization never fails.
-    var r = std.Io.Reader.fixed(data);
-    var bitmap = zroaring.Bitmap.portable_deserialize_safe(gpa, &r) catch return 0;
+    {
+        const f = tmpdir.createFile(io, "bitmap32", .{}) catch unreachable;
+        defer f.close(io);
+        f.writeStreamingAll(io, data) catch unreachable;
+    }
+    const f = tmpdir.openFile(io, "bitmap32", .{}) catch unreachable;
+    var read_buf: [256]u8 = undefined;
+    var bitmap = zroaring.Bitmap.portable_deserialize(gpa, io, f, &read_buf) catch return 0;
     defer bitmap.deinit(gpa);
     // The bitmap may not be usable if it does not follow the specification.
     // We can validate the bitmap we recovered to make sure it is proper.
@@ -171,6 +179,8 @@ fn bitmap32(data: []const u8) u8 {
 
 const std = @import("std");
 const mem = std.mem;
+const Io = std.Io;
+const testing = std.testing;
 const assert = std.debug.assert;
 const zroaring = @import("root.zig");
 const Bitmap = zroaring.Bitmap;
