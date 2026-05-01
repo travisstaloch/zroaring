@@ -9,7 +9,7 @@ This repo is hosted on [codeberg](https://codeberg.org/archaistvolts/zroaring) a
 # Use
 With zig version 0.16.0
 
-Be sure to test your application in debug mode as there may be unreachable code paths left as TODOs.
+:warning: **Be sure to test your application in debug mode as there may be unreachable code paths left as TODOs**.
 
 ### fetch package
 ```console
@@ -28,7 +28,7 @@ const exe_mod = b.createModule(.{
 ```zig
 // app.zig
 const zroaring = @import("zroaring");
-var zr: zroaring.Bitmap = .{};
+var zr: zroaring.Bitmap = .empty;
 defer zr.deinit(std.testing.allocator);
 try zr.add(std.testing.allocator, 1);
 try std.testing.expect(zr.contains(1));

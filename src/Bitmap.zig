@@ -4,9 +4,8 @@
 ///
 const Bitmap = @This();
 
-///
-/// `header` is a storage description for an `Array` and its
-/// keys/containers all stored in `blocks`.
+/// `header` is a storage description for an `Array` of keys and containers
+/// all stored in `blocks`.
 header: Container,
 /// Storage for all container data, including `header`.
 /// `header` Array is stored in first block.
@@ -22,7 +21,7 @@ pub fn deinit(r: *Bitmap, allocator: mem.Allocator) void {
     r.header = .uninit;
 }
 
-pub fn create_with_capacity(r: *Bitmap, allocator: mem.Allocator, container_count: u32) !*Array {
+pub fn create_with_capacity(r: *Bitmap, allocator: mem.Allocator, container_count: u32) !void {
     assert(r.header == Container.uninit);
     const hinfo = header_info(container_count);
     const totalblocks = hinfo.headerblocks + hinfo.containerblocks;
@@ -36,16 +35,15 @@ pub fn create_with_capacity(r: *Bitmap, allocator: mem.Allocator, container_coun
         .typecode = .array,
     };
 
-    trace(@src(), "{}", .{totalblocks});
+    trace(@src(), "totalblocks={}", .{totalblocks});
     const ra: *Array = mem.bytesAsValue(Array, r.blocks.items[0..C.HEADER_BLOCKS]);
     ra.* = .empty;
     ra.containers = @ptrCast(&r.blocks.items[C.HEADER_BLOCKS]);
     ra.keys = @ptrCast(@alignCast(ra.containers + hinfo.containercount));
     ra.capacity = hinfo.containercount;
-    return ra;
 }
 
-pub fn get_header(r: *const Bitmap) *Array {
+pub fn get_header(r: *const Bitmap) *align(C.BLOCK_ALIGN) Array {
     assert(r.header.cardinality == Container.MAX_CARDINALITY);
     assert(r.header.nblocks_minus1 == 0);
     assert(r.blocks.items.len != 0);
@@ -157,10 +155,10 @@ pub fn portable_deserialize(
             blockoffset += C.BITSET_BLOCKS;
         } else if (isrun) {
             const nruns: u32 = try r.takeInt(u16, .little);
-            const blocks_size = mem.alignForward(u32, nruns * @sizeOf(root.Rle16), C.BLOCK_BYTES);
+            const blocks_size = mem.alignForward(u32, nruns * @sizeOf(Rle16), C.BLOCK_BYTES);
             const nblocks = @divExact(blocks_size, C.BLOCK_BYTES);
-            const runs = misc.asSlice([]align(C.BLOCK_ALIGN) root.Rle16, blocks.items.ptr[blockoffset..][0..nblocks]);
-            try r.readSliceEndian(root.Rle16, runs[0..nruns], .little);
+            const runs = misc.asSlice([]align(C.BLOCK_ALIGN) Rle16, blocks.items.ptr[blockoffset..][0..nblocks]);
+            try r.readSliceEndian(Rle16, runs[0..nruns], .little);
             c.* = .{
                 .typecode = .run,
                 .cardinality = @intCast(nruns),
@@ -227,7 +225,7 @@ pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
     if (r.header == Container.uninit) {
         @branchHint(.unlikely);
         assert(r.blocks.capacity == 0);
-        _ = try r.create_with_capacity(allocator, 0);
+        try r.create_with_capacity(allocator, 0);
     }
     // trace(@src(), "{*} {*}", .{ r.blocks.items, r.get_header().keys });
     assert(@intFromPtr(r.get_header().containers + r.get_header().capacity) == @intFromPtr(r.get_header().keys));
@@ -280,10 +278,9 @@ pub fn init_container_with_cardinality(
 
     const c = switch (tc) {
         .run => {
-            const blocks_size = mem.alignForward(u32, card_or_nruns * @sizeOf(root.Rle16), C.BLOCK_BYTES);
+            const blocks_size = mem.alignForward(u32, card_or_nruns * @sizeOf(Rle16), C.BLOCK_BYTES);
             const nblocks = @divExact(blocks_size, C.BLOCK_BYTES);
             _ = try r.blocks.addManyAsSlice(allocator, nblocks);
-            if (true) unreachable; // TODO incorrect ^
             return .{
                 .typecode = .run,
                 .cardinality = @intCast(card_or_nruns),
@@ -312,10 +309,10 @@ pub fn init_container_with_cardinality(
 
 fn append_first_assume_capacity(r: *Bitmap, c: Container, container_value: anytype) void {
     switch (@TypeOf(container_value)) {
-        root.Rle16 => {
+        Rle16 => {
             assert(c.typecode == .run);
             const runs = misc.asSlice(
-                []align(C.BLOCK_ALIGN) root.Rle16,
+                []align(C.BLOCK_ALIGN) Rle16,
                 r.blocks.items[c.blockoffset..][0..c.nblocks()],
             );
             runs[0] = container_value;
@@ -341,7 +338,7 @@ pub fn init_range(r: *Bitmap, allocator: mem.Allocator, tc: Typecode, start: u32
         .run => {
             const c = try r.init_container_with_cardinality(allocator, tc, 1);
             trace(@src(), "run {} {}", .{ c.cardinality, r.get_header() });
-            r.append_first_assume_capacity(c, root.Rle16{
+            r.append_first_assume_capacity(c, Rle16{
                 .value = @truncate(start),
                 .length = @truncate(stop - start - 1),
             });
@@ -408,11 +405,16 @@ fn replace_key_and_container_at_index(r: *Bitmap, i: u32, key: u16, c: Container
 
 /// Add all values in range [min, max]
 pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
-    trace(@src(), "({},{}) size={}", .{ min, max, r.get_header().len });
     if (min > max) return;
+    if (r.header == Container.uninit) {
+        @branchHint(.unlikely);
+        assert(r.blocks.capacity == 0);
+        try r.create_with_capacity(allocator, 0);
+    }
+    trace(@src(), "({},{}) size={}", .{ min, max, r.get_header().len });
+
     const min_key = min >> 16;
     const max_key = max >> 16;
-
     const num_required_containers = max_key - min_key + 1;
     const suffix_length = misc.count_greater(r.get_header().slice(.keys, .len), @truncate(max_key));
     const prefix_length = misc.count_less(
@@ -426,20 +428,19 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
         try r.shift_tail(
             allocator,
             suffix_length,
-            @bitCast(num_required_containers -% common_length),
+            @bitCast(num_required_containers - common_length),
         );
     }
 
-    var src = misc.cast(i32, prefix_length + common_length) - 1;
-    var dst = misc.cast(i32, r.get_header().len - suffix_length) - 1;
+    var src = prefix_length + common_length;
+    var dst = r.get_header().len - suffix_length;
     var key = max_key;
-    while (key != min_key -% 1) : (key -%= 1) { // beware of min_key==0
-        // std.debug.print("key {} min_key {} max_key {}\n", .{ key, min_key, max_key });
+    while (key + 1 != min_key) : (key -= 1) { // beware of min_key==0
+        // trace(@src(), "key {} min_key {} max_key {}\n", .{ key, min_key, max_key });
         const container_min = if (min_key == key) min & 0xffff else 0;
         const container_max = if (max_key == key) max & 0xffff else 0xffff;
-        // std.debug.print("src {}\n", .{src});
         var newc: Container = .uninit;
-        if (src >= 0 and r.get_header().slice(.keys, .len)[@intCast(src)] == key) {
+        if (src > 0 and r.get_header().slice(.keys, .len)[src - 1] == key) {
             const srcu: Container.Id = @enumFromInt(src);
             // TODO // ra.unshare_container_at_index(srcu);
             newc = try r.add_range_to_container(allocator, srcu, container_min, container_max);
@@ -450,9 +451,10 @@ pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32
         } else {
             newc = try r.from_range(allocator, container_min, container_max + 1, 1);
         }
-        trace(@src(), "dst {}, newc {}", .{ dst, newc });
+        trace(@src(), "dst {}, newc {} {any}", .{ dst, newc, newc.blocks_as(.run, r)[0..newc.cardinality] });
         assert(newc != Container.uninit);
-        r.replace_key_and_container_at_index(@intCast(dst), @truncate(key), newc);
+        r.replace_key_and_container_at_index(dst, @truncate(key), newc);
+        if (dst == 0) break;
         dst -= 1;
     }
 }
@@ -586,11 +588,14 @@ pub fn write(r: *const Bitmap, c: Container, w: *Io.Writer) !usize {
     switch (c.typecode) {
         .array => {
             // std.debug.print("array card {}\n", .{ card });
-            const values = c.blocks_as(.array, r);
-            try w.writeSliceEndian(u16, values[0..c.cardinality], .little);
-            return c.cardinality * 2;
+            try w.writeSliceEndian(u16, c.blocks_as(.array, r)[0..c.cardinality], .little);
+            return c.cardinality * @sizeOf(u16);
         },
-        .run => unreachable,
+        .run => {
+            try w.writeInt(u16, @intCast(c.cardinality), .little);
+            try w.writeSliceEndian(Rle16, c.blocks_as(.run, r)[0..c.cardinality], .little);
+            return @sizeOf(u16) + c.cardinality * @sizeOf(Rle16);
+        },
         .bitset => {
             assert(c.nblocks() == C.BITSET_BLOCKS);
             try w.writeSliceEndian(u64, c.blocks_as(.bitset, r), .little);
@@ -610,12 +615,12 @@ fn portable_serialize_empty(w: *std.Io.Writer) !usize {
 }
 
 // TODO replace temp_allocator with RunFlags
-pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, temp_allocator: mem.Allocator) !usize {
+pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, runflags: *root.RunFlags) !usize {
     if (r.header == Container.uninit) {
         return portable_serialize_empty(w);
     }
 
-    const h = r.get_header();
+    const h: Array.AlignedPtr = r.get_header();
     const cslen = h.len;
     if (cslen == 0) {
         return portable_serialize_empty(w);
@@ -632,14 +637,13 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, temp_allocator: mem.Allo
         }, .little);
         written_count += @sizeOf(root.Cookie);
         const s = (cslen + 7) / 8;
-        const buf = try temp_allocator.alloc(u8, s);
-        @memset(buf, 0);
+        @memset(runflags[0..s], 0);
         for (cs, 0..) |c, i| {
             if (c.typecode == .run) {
-                buf[i / 8] |= @as(u8, 1) << @intCast(i % 8);
+                runflags[i / 8] |= @as(u8, 1) << @intCast(i % 8);
             }
         }
-        try w.writeAll(buf);
+        try w.writeAll(runflags[0..s]);
         written_count += s;
         startOffset = if (cslen < C.NO_OFFSET_THRESHOLD)
             4 + 4 * cslen + s
@@ -657,10 +661,10 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, temp_allocator: mem.Allo
 
     for (h.slice(.keys, .len), cs) |k, c| {
         try w.writeInt(u16, k, .little);
-        assert(c.typecode == .array or c.typecode == .bitset);
+        const card: u16 = @intCast(c.get_cardinality(&r) - 1);
         // get_cardinality returns a value in [1,1<<16], subtracting one
         // we get [0,1<<16 - 1] which fits in 16 bits
-        try w.writeInt(u16, @intCast(c.cardinality - 1), .little);
+        try w.writeInt(u16, card, .little);
         written_count += @sizeOf(u16) + @sizeOf(u16);
     }
     if ((!hasrun) or (cslen >= C.NO_OFFSET_THRESHOLD)) {
@@ -673,7 +677,6 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, temp_allocator: mem.Allo
     }
 
     for (cs) |c| {
-        assert(c.typecode == .array or c.typecode == .bitset);
         written_count += try r.write(c, w);
     }
 
@@ -735,7 +738,7 @@ pub fn convert_run_optimize(r: *Bitmap, c: Container, allocator: mem.Allocator) 
     } else if (c.typecode == .array) {
         // it might need to be converted to a run container.
         const nruns = r.array_number_of_runs(c);
-        const nblocks = @divExact(mem.alignForward(u32, nruns * @sizeOf(root.Rle16), C.BLOCK_BYTES), C.BLOCK_BYTES);
+        const nblocks = @divExact(mem.alignForward(u32, nruns * @sizeOf(Rle16), C.BLOCK_BYTES), C.BLOCK_BYTES);
         const rc: Container = .{
             .typecode = .run,
             .cardinality = @intCast(nruns),
@@ -837,7 +840,6 @@ pub fn convert_run_optimize(r: *Bitmap, c: Container, allocator: mem.Allocator) 
 pub fn convert_run_to_efficient_container(r: *Bitmap, c: Container, allocator: mem.Allocator) !Container {
     _ = allocator; // autofix
     assert(c.typecode == .run);
-    trace(@src(), "{}", .{c.cardinality});
     const size_as_run_container = c.serialized_size_in_bytes();
     const size_as_bitset_container = @sizeOf(root.Bitset);
     const card = c.compute_cardinality(r);
@@ -1110,3 +1112,4 @@ const Any = root.container.Any;
 const Container = root.container.Container;
 const Block = root.Block;
 const Array = root.Array;
+const Rle16 = root.Rle16;

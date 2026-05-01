@@ -51,11 +51,11 @@ fn validateRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral(), val
     var zr_w = std.Io.Writer.fixed(zr_serbuf);
     const cr_serbuf = try allocator.alloc(u8, cr_size);
     defer allocator.free(cr_serbuf);
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
+    var runflags: zroaring.RunFlags = undefined;
+
     try testing.expectEqual(
         c.roaring_bitmap_portable_serialize(cr, @ptrCast(cr_serbuf.ptr)),
-        zr.portable_serialize(&zr_w, arena.allocator()),
+        zr.portable_serialize(&zr_w, &runflags),
     );
     // std.debug.print("'{s}' values {any}\nzr {f}\n", .{ name, values[0..@min(20, values.len)], zr });
     // std.debug.print("cr_buf {x}\nzr_buf {x}\n", .{ cr_buf, zr_buf });
@@ -88,13 +88,12 @@ fn validateRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral(), val
 }
 
 /// Validate using addRange instead of individual adds.
-fn validateRangeRoundTrip(allocator: mem.Allocator, io: Io, name: []const u8, start: u32, end: u32, run_optimize: bool) !void {
-    _ = name;
+fn validateRangeRoundTrip(allocator: mem.Allocator, io: Io, name: @EnumLiteral(), start: u32, end: u32, run_optimize: bool) !void {
     // build both
     var zr: Bitmap = .empty;
     defer zr.deinit(allocator);
     try zr.add_range(allocator, start, end + 1);
-    misc.trace(@src(), "after add_range({},{}) zr {}", .{ start, end + 1, zr.get_header() });
+    misc.trace(@src(), "{s}: after add_range({},{}) zr {}", .{ @tagName(name), start, end + 1, zr.get_header() });
 
     const zr_did_optimize = run_optimize and try zr.run_optimize(allocator);
 
@@ -105,6 +104,7 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, io: Io, name: []const u8, st
 
     // serialize both
     const cr_size = c.roaring_bitmap_portable_size_in_bytes(cr);
+    // misc.trace(@src(), "ra_portable_header_size()={}", .{c.ra_portable_header_size(&cr.*.high_low_container)});
     const cr_buf = try allocator.alloc(u8, cr_size);
     defer allocator.free(cr_buf);
 
@@ -113,9 +113,8 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, io: Io, name: []const u8, st
     const zr_buf = try allocator.alloc(u8, zr_size);
     defer allocator.free(zr_buf);
     var zr_w: std.Io.Writer = .fixed(zr_buf);
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    _ = try zr.portable_serialize(&zr_w, arena.allocator());
+    var runflags: zroaring.RunFlags = undefined;
+    _ = try zr.portable_serialize(&zr_w, &runflags);
 
     _ = c.roaring_bitmap_portable_serialize(cr, @ptrCast(cr_buf.ptr));
     try testing.expectEqual(cr_did_optimize, zr_did_optimize);
@@ -141,8 +140,6 @@ fn validateRangeRoundTrip(allocator: mem.Allocator, io: Io, name: []const u8, st
     var zr2 = try Bitmap.portable_deserialize(allocator, io, cr_f, &rbuf);
     defer zr2.deinit(allocator);
     try testing.expect(zr.equals(&zr2));
-
-    if (true) return;
 }
 
 /// Validate FrozenBitmap can read serialized bytes and contains() works correctly.
@@ -197,10 +194,9 @@ fn validateAll(allocator: mem.Allocator) !void {
     for (0..5000) |i| bitset5000[i] = @intCast(i);
     try validateRoundTrip(allocator, testio, .bitset_5000, &bitset5000, false);
 
-    if (true) return;
     // Full chunk as run (65536 values) - CRoaring auto-optimizes to run, so we must too
     // (This tests run serialization, not bitset - renamed to avoid confusion)
-    try validateRangeRoundTrip(allocator, testio, "run_full_chunk", 0, 65535, true);
+    try validateRangeRoundTrip(allocator, testio, .run_full_chunk, 0, 65535, true);
 
     // Multiple container tests:
     // Values at chunk boundaries
@@ -217,8 +213,9 @@ fn validateAll(allocator: mem.Allocator) !void {
 
     // Run-optimized tests:
     // Range that compresses well
-    try validateRangeRoundTrip(allocator, "range_0_1000", 0, 1000, true);
-    try validateRangeRoundTrip(allocator, "range_0_10000", 0, 10000, true);
+    try validateRangeRoundTrip(allocator, testio, .range_0_1000, 0, 1000, true);
+    try validateRangeRoundTrip(allocator, testio, .range_0_10000, 0, 10000, true);
+    if (true) return;
     // Multiple ranges -> multiple runs
     var multi_range: [300]u32 = undefined;
     for (0..100) |i| {
@@ -242,7 +239,7 @@ fn validateAll(allocator: mem.Allocator) !void {
 
     // Large scale tests:
     // Dense range (1M values) - CRoaring auto-optimizes ranges, so we must too
-    try validateRangeRoundTrip(allocator, "dense_1M", 0, 999999, true);
+    try validateRangeRoundTrip(allocator, .dense_1M, 0, 999999, true);
 
     // Sparse random (N values across u32 space)
     const N = if (std.debug.runtime_safety) 2000 else 500000;

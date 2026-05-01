@@ -4,11 +4,11 @@ pub const Array = extern struct {
     // Slice fields ordered by decreasing element size to simplify math.
 
     /// shared container count. 0..65536.
-    len: u32,
+    len: u32 align(C.BLOCK_ALIGN),
     /// shared container capacity.  0..65536.
     capacity: u32,
     magic: root.Magic,
-    ///  EnumSet(Flag) but extern
+    /// an extern compatible `std.enums.EnumSet(Flag)`
     flags: u8,
 
     containers: [*]align(C.BLOCK_ALIGN) root.Container,
@@ -16,6 +16,7 @@ pub const Array = extern struct {
     keys: [*]align(C.BLOCK_ALIGN) u16,
 
     pub const empty = mem.zeroes(Array);
+    pub const AlignedPtr = *align(C.BLOCK_ALIGN) Array;
 
     pub fn can_have_run_containers(h: *const Array) bool {
         return h.magic == .SERIAL_COOKIE;
@@ -62,10 +63,9 @@ pub const Array = extern struct {
         } else false;
     }
 
-    /// file position where array data ends and container data starts
-    pub fn portable_size(a: *const Array) usize {
-        const count = a.len;
-        if (a.can_have_run_containers()) {
+    pub fn portable_size_ext(ra: *const Array, hasruns: bool) usize {
+        const count = ra.len;
+        if (hasruns) {
             return 4 + (count + 7) / 8 +
                 if (count < C.NO_OFFSET_THRESHOLD) // for small bitmaps, we omit the offsets
                     4 * count
@@ -76,14 +76,27 @@ pub const Array = extern struct {
         }
     }
 
-    /// `containers` must have been populated such as after deserialize()
-    pub fn portable_size_in_bytes(h: *const Array) usize {
-        var count = h.portable_size();
-        for (h.slice(.containers, .len)) |c| {
+    /// file position where array data ends and container data starts.
+    /// depends only on `ra.magic` and `ra.len`.
+    pub fn portable_size(ra: *const Array) usize {
+        return ra.portable_size_ext(ra.can_have_run_containers());
+    }
+
+    /// file position where array data ends and container data starts.
+    /// depends on `ra.containers` being populated and checks if there are any
+    /// run containers present.
+    pub fn portable_size_has_run(ra: *const Array) usize {
+        return ra.portable_size_ext(ra.has_run_container());
+    }
+
+    /// `containers` must be populated such as after deserialize()
+    pub fn portable_size_in_bytes(ra: *const Array) usize {
+        var count = ra.portable_size_has_run();
+        for (ra.slice(.containers, .len)) |c| {
             count += switch (c.typecode) {
-                .array => c.cardinality * 2,
+                .array => c.cardinality * @sizeOf(u16),
                 .bitset => @sizeOf(root.Bitset),
-                .run => @as(u32, c.cardinality) * 4,
+                .run => @sizeOf(u16) + @as(u32, c.cardinality) * @sizeOf(root.Rle16),
                 .shared => unreachable, // TODO
             };
         }

@@ -7,8 +7,8 @@
 pub const zroaring = @This();
 
 pub const Bitmap = @import("Bitmap.zig");
-pub const Block = @Vector(constants.BLOCK_BYTES, u8);
 pub const Bitset = [1024]u64;
+pub const Block = @Vector(constants.BLOCK_BYTES, u8);
 pub const constants = @import("constants.zig");
 pub const container = @import("container.zig");
 pub const Container = container.Container;
@@ -35,7 +35,8 @@ pub const Cookie = extern struct {
 pub const Typecode = enum(u2) { shared, bitset, array, run };
 pub const Rle16 = extern struct { value: u16, length: u16 };
 pub const KeyCard = extern struct { key: u16, cardinality_minus1: u16 };
-/// [8192]u8
+/// a bitset which can represent MAX_CONTAINERS. answers which containers are
+/// run containers: `[8192]u8`.
 pub const RunFlags = [constants.MAX_CONTAINERS / 8]u8;
 
 test {

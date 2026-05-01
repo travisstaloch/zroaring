@@ -1,16 +1,20 @@
-///
+/// Usually describes storage of an array, bitset or run container.
+/// Also used to describe `Bitmap`.header, an `Array`.
+/// In that case `blockoffset` is used to store num blocks since
+/// `nblocks_minus1` is too small and the blockoffset, always 1, isn't needed.
 pub const Container = packed struct(u64) {
     /// container cardinality / nruns.
     cardinality: u30,
-    /// an offset into blocks where container data starts.
+    /// usually an offset into blocks where container data starts.
+    /// when `Bitmap`.header, an `Array`: total number of blocks.
     blockoffset: u24, // 0..C.MAX_BLOCKS
-    /// number of blocks in the container minus one.
-    nblocks_minus1: u8, // 0..255:1..256
+    /// number of blocks in the array, bitset or run container minus one.
+    nblocks_minus1: u8, // 0..255 => 1..256
     typecode: root.Typecode,
 
-    pub const Id = enum(u32) { _ }; // TODO remove not needed?
-    // FIXME: maybe safer to use @bitCast(@as(u64, std.math.maxInt(u64)));
-    pub const uninit: Container = mem.zeroes(Container);
+    pub const Id = enum(u32) { _ }; // TODO remove? doesn't seem necessary.
+    /// FIXME: safety: use max value instead of 0 here: @bitCast(@as(u64, std.math.maxInt(u64)));
+    pub const uninit: Container = @bitCast(@as(u64, 0)); // mem.zeroes(Container);
     pub const Cardinality = @FieldType(Container, "cardinality");
     /// used to identify a header Array
     pub const MAX_CARDINALITY = std.math.maxInt(Cardinality);
@@ -51,6 +55,13 @@ pub const Container = packed struct(u64) {
     pub fn blocks_as(c: Container, comptime typecode: root.Typecode, r: *const Bitmap) @FieldType(Element, @tagName(typecode)) {
         // trace(@src(), "header={} c={}", .{ r.header, c });
         return @ptrCast(c.get_blocks(r));
+    }
+    pub fn get_cardinality(c: Container, r: *const Bitmap) u32 {
+        return switch (c.typecode) {
+            .bitset, .array => c.cardinality,
+            .run => c.compute_cardinality(r),
+            .shared => unreachable,
+        };
     }
 
     // adapted from grow_capacity
@@ -224,6 +235,7 @@ pub const Container = packed struct(u64) {
     pub const size_in_bytes = serialized_size_in_bytes;
 
     pub fn equals(c1: Container, c2: Container, r1: *const Bitmap, r2: *const Bitmap) bool {
+        if (c1 == c2) return true;
         const card1 = c1.cardinality;
         if (c1.typecode != c2.typecode or card1 != c2.cardinality)
             return false;
@@ -249,17 +261,18 @@ pub const Container = packed struct(u64) {
     }
 
     pub fn compute_cardinality(v: Container, r: *const Bitmap) u30 {
-        // trace(@src(), "{}", .{v});
-        var ret: u30 = 0;
+        var ret: u30 = undefined;
         switch (v.typecode) {
             .bitset => {
+                ret = 0;
                 for (v.blocks_as(.bitset, r)) |word| {
                     ret += @popCount(word);
                 }
             },
             .array => ret = @intCast(v.cardinality),
             .run => {
-                for (v.blocks_as(.run, r)) |run| {
+                ret = v.cardinality; // init with nruns
+                for (v.blocks_as(.run, r)[0..v.cardinality]) |run| {
                     ret += run.length;
                 }
             },
