@@ -1,3 +1,5 @@
+//! common helpers
+
 ///
 ///   Good old binary search.
 ///   Assumes that array is sorted, has logarithmic complexity.
@@ -114,6 +116,9 @@ pub fn rle16_count_greater(array: []align(C.BLOCK_ALIGN) const root.Rle16, key: 
     return @intCast(@as(i32, @intCast(array.len)) - low);
 }
 
+// ---
+// Memory helpers
+// ---
 pub fn cast(T: type, i: anytype) T {
     return @intCast(i);
 }
@@ -123,28 +128,23 @@ pub fn asSlice(Slice: type, other_slice: anytype) Slice {
     return std.mem.bytesAsSlice(std.meta.Child(Slice), std.mem.sliceAsBytes(other_slice));
 }
 
-pub fn fieldTypes(
-    comptime Header: type,
-) *const [@typeInfo(Header).@"struct".fields.len]type {
-    const fs = @typeInfo(Header).@"struct".fields;
+pub fn fieldTypes(comptime Header: type) *const [@typeInfo(Header).@"struct".fields.len]type {
+    const fs = std.meta.fields(Header);
     comptime var ret: [fs.len]type = undefined;
     for (fs, &ret) |f, *r| r.* = f.type;
     return &ret;
 }
 
-pub fn trace(T: type, method_name: []const u8, comptime fmt: []const u8, args: anytype) void {
+pub fn trace(src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype) void {
     if (@import("build-options").trace) {
         var buffer: [64]u8 = undefined;
         const stderr = std.debug.lockStderr(&buffer);
         defer std.debug.unlockStderr();
         var term = stderr.terminal();
         term.mode = .escape_codes;
+        term.writer.print("src/{s}:{}:{}: ", .{ src.file, src.line, src.column }) catch {};
         term.setColor(.yellow) catch {};
-        term.writer.print("{s}", .{@typeName(T)}) catch {};
-        term.setColor(.white) catch {};
-        term.writer.print(".", .{}) catch {};
-        term.setColor(.yellow) catch {};
-        term.writer.print("{s}()", .{method_name}) catch {};
+        term.writer.print("{s}::{s}", .{ src.module, src.fn_name }) catch {};
         term.setColor(.white) catch {};
         term.writer.print(" : ", .{}) catch {};
         term.writer.print(fmt, args) catch {};

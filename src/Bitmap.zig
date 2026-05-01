@@ -1,288 +1,102 @@
+///
+/// All container data is stored in `blocks`s including `header` and
+/// its keys/containers.
+///
 const Bitmap = @This();
 
-header: Header,
-pool: std.ArrayList(root.Block),
+///
+/// `header` is a storage description for an `Array` and its
+/// keys/containers all stored in `blocks`.
+header: Container,
+/// Storage for all container data, including `header`.
+/// `header` Array is stored in first block.
+/// `Containers` are stored starting at block 1 with keys next.
+/// All other container data is stored after keys.
+blocks: std.ArrayList(Block),
 
-pub const empty: Bitmap = .{ .header = mem.zeroes(Header), .pool = .empty };
-
-pub const KeyCard = extern struct { key: u16, cardinality_minus1: u16 };
-
-const Container = packed struct(u64) {
-    /// an offset into the data pool.  where the container data starts.
-    pool_offset: u32,
-    n_blocks: u14,
-    /// only used for runs.  undefined for bitsets and arrays.
-    n_runs: u16,
-    typecode: enum(u2) { shared, bitset, array, run },
-
-    pub fn serialized_size_in_bytes(c: Container, card: u32) usize {
-        return switch (c.typecode) {
-            .array => @sizeOf(u16) * card,
-            .run => @sizeOf(u16) + @sizeOf(root.Rle16) * c.n_runs,
-            .bitset => @sizeOf(root.Bitset),
-            .shared => unreachable,
-        };
-    }
-
-    pub const size_in_bytes = serialized_size_in_bytes;
-};
-
+pub const empty: Bitmap = .{ .header = .uninit, .blocks = .empty };
 pub const Flag = enum(u8) { cow, frozen };
 
-/// Designed for frequent updates.
-/// Fields ordered by decreasing alignment to reduce size.
-/// All slices share a single allocation of length `buffer_size()`.
-pub const Header = extern struct {
-    /// of length `(container_count+7)/8` when runs are present, otherwise 0.
-    run_flags: ?[*]u8,
-    /// keys from `descriptive_header`.  of length `container_count`.
-    keys: [*]u16,
-    /// cardinalities from `descriptive_header` + 1.  of length `container_count`.
-    cardinalities: [*]u32,
-    /// of length `container_count`.
-    containers: [*]Container,
-    /// file position where header data ends and container data starts.  set during
-    /// deserialization.
-    container_startpos: u64, // TODO remove, calc when needed.  always eql portable_header_size()
-    container_count: u32,
-    /// number of blocks in the pool.
-    n_blocks: u32,
-    magic: root.Magic,
-    /// std.EnumSet(Flag) but extern
-    flags: u8,
+pub fn deinit(r: *Bitmap, allocator: mem.Allocator) void {
+    r.blocks.deinit(allocator);
+    r.header = .uninit;
+}
 
-    pub const ALIGNMENT: mem.Alignment = .fromByteUnits(@alignOf(Header));
+pub fn create_with_capacity(r: *Bitmap, allocator: mem.Allocator, container_count: u32) !*Array {
+    assert(r.header == Container.uninit);
+    const hinfo = header_info(container_count);
+    const totalblocks = hinfo.headerblocks + hinfo.containerblocks;
+    try r.blocks.ensureTotalCapacity(allocator, totalblocks);
+    r.blocks.items.len = hinfo.headerblocks;
 
-    pub fn deinit(h: *Header, allocator: mem.Allocator) void {
-        if (h.container_count == 0) return;
-        var ptr: ?[*]u8 = if (h.can_have_run_containers())
-            h.run_flags
-        else
-            @ptrCast(@alignCast(h.keys));
-        const buf = ptr.?[0..h.buffer_size()];
-        allocator.free(buf);
-    }
-
-    pub fn can_have_run_containers(h: Header) bool {
-        return h.magic == .SERIAL_COOKIE;
-    }
-
-    pub fn is_empty(h: Header) bool {
-        return h.container_count == 0;
-    }
-
-    pub fn get_run_flags(h: Header) []u8 {
-        return if (h.can_have_run_containers())
-            h.run_flags.?[0 .. (h.container_count + 7) / 8]
-        else
-            &.{};
-    }
-
-    pub fn get_keys(h: Header) []u16 {
-        return h.keys[0..h.container_count];
-    }
-
-    pub fn get_cards(h: Header) []u32 {
-        return h.cardinalities[0..h.container_count];
-    }
-
-    pub fn get_containers(h: Header) []Container {
-        return h.containers[0..h.container_count];
-    }
-
-    pub fn has_run_container(h: Header) bool {
-        return for (h.get_containers()) |c| {
-            if (c.typecode == .run) break true;
-        } else false;
-    }
-
-    pub fn portable_size(h: Header) usize {
-        const count = h.container_count;
-        if (h.can_have_run_containers()) {
-            return 4 + (count + 7) / 8 +
-                if (count < C.NO_OFFSET_THRESHOLD) // for small bitmaps, we omit the offsets
-                    4 * count
-                else
-                    8 * count; // - 4 because we pack the size with the cookie
-        } else {
-            return 4 + 4 + 8 * count; // no run flags, u32 cardinality,
-        }
-    }
-
-    /// `containers` must have been populated such as after deserialize()
-    pub fn portable_size_in_bytes(h: Header) usize {
-        var count = h.portable_size();
-        for (h.get_containers(), 0..) |c, i| {
-            count += switch (c.typecode) {
-                .array => h.cardinalities[i] * 2,
-                .bitset => @sizeOf(root.Bitset),
-                .run => @as(u32, c.n_runs) * 4,
-                .shared => unreachable, // TODO
-            };
-        }
-        return count;
-    }
-
-    /// how many bytes are needed to store header slices not including @sizeOf(Header).
-    pub fn buffer_size_from_file(io: Io, bitmap_file: Io.File) !Info {
-        var read_buf: [8]u8 = undefined;
-        var freader = bitmap_file.reader(io, &read_buf);
-        return header_info_from_file_reader(&freader);
-    }
-
-    pub const Info = struct {
-        buffer_size: usize,
-        cookie: root.Cookie,
-        container_count: u32,
+    r.header = .{
+        .cardinality = Container.MAX_CARDINALITY,
+        .blockoffset = hinfo.headerblocks,
+        .nblocks_minus1 = 0,
+        .typecode = .array,
     };
 
-    /// advances `freader` by 4 bytes or 8 bytes when there are runs
-    pub fn header_info_from_file_reader(freader: *Io.File.Reader) !Info {
-        assert(freader.logicalPos() == 0);
-        const r = &freader.interface;
-        const cookie = try r.takeStruct(root.Cookie, .little);
-        if (cookie.magic != .SERIAL_COOKIE and
-            cookie.magic != .SERIAL_COOKIE_NO_RUNCONTAINER)
-            return error.UnexpectedCookie;
+    trace(@src(), "{}", .{totalblocks});
+    const ra: *Array = mem.bytesAsValue(Array, r.blocks.items[0..C.HEADER_BLOCKS]);
+    ra.* = .empty;
+    ra.containers = @ptrCast(&r.blocks.items[C.HEADER_BLOCKS]);
+    ra.keys = @ptrCast(@alignCast(ra.containers + hinfo.containercount));
+    ra.capacity = hinfo.containercount;
+    return ra;
+}
 
-        const container_count = if (cookie.magic == .SERIAL_COOKIE)
-            @as(u32, cookie.cardinality_minus1) + 1
-        else
-            try r.takeInt(u32, .little);
+pub fn get_header(r: *const Bitmap) *Array {
+    assert(r.header.cardinality == Container.MAX_CARDINALITY);
+    assert(r.header.nblocks_minus1 == 0);
+    assert(r.blocks.items.len != 0);
+    return mem.bytesAsValue(Array, r.blocks.items[0..C.HEADER_BLOCKS]);
+}
 
-        return .{
-            .cookie = cookie,
-            .container_count = container_count,
-            .buffer_size = buffer_size_from_magic_count(cookie.magic, container_count),
-        };
-    }
+/// returns nblocks for given array capacity
+fn header_nblocks(len: comptime_int) u24 {
+    // first HEADER_BLOCKS blocks are an Array.  following blocks hold Array containers/keys.
+    return C.HEADER_BLOCKS + // Array
+        @divExact(len * @sizeOf(u16), C.BLOCK_BYTES) + // keys
+        @divExact(len * @sizeOf(Container), C.BLOCK_BYTES); // containers
+}
 
-    /// Simulates the behavior of a fixed buffer allocator, aligning forward.
-    /// Order matters. must be synced with Header.deserialize().
-    /// TODO - discarding writer or some simpler way than this?
-    pub fn buffer_size_from_magic_count(magic: root.Magic, container_count: u32) usize {
-        var ret: usize = 0;
-        const hasruns = magic == .SERIAL_COOKIE;
-        // run_flags
-        if (hasruns) ret += (container_count + 7) / 8;
-        // keys
-        ret = mem.alignForward(usize, ret + @sizeOf(u16) * container_count, @alignOf(u16));
-        // cards
-        ret = mem.alignForward(usize, ret + @sizeOf(u32) * container_count, @alignOf(u32));
-        // file_offsets
-        // if (!hasruns or (hasruns and container_count >= C.NO_OFFSET_THRESHOLD)) {
-        //     ret = mem.alignForward(usize, ret + @sizeOf(u32) * container_count, @alignOf(u32));
-        // }
-
-        // containers
-        ret = mem.alignForward(usize, ret + @sizeOf(Container) * container_count, @alignOf(Container));
-        return ret;
-    }
-
-    pub fn buffer_size(h: Header) usize {
-        return buffer_size_from_magic_count(h.magic, h.container_count);
-    }
-
-    pub fn deserialize(bitmap_file: Io.File, allocator: mem.Allocator, read_buf: []u8) !Header {
-        var freader = bitmap_file.reader(read_buf);
-        return deserialize_from_file_reader(allocator, &freader);
-    }
-
-    pub fn deserialize_from_file_reader(allocator: mem.Allocator, freader: *Io.File.Reader) !Header {
-        const info = try Header.header_info_from_file_reader(freader);
-        const header_buf = try allocator.alloc(u8, info.buffer_size);
-        const r = &freader.interface;
-        errdefer allocator.free(header_buf);
-        var fba = std.heap.FixedBufferAllocator.init(header_buf);
-        const fbaa = fba.allocator();
-
-        var ret: Header = mem.zeroes(Header);
-
-        const cookie = info.cookie;
-        ret.magic = cookie.magic;
-        assert(cookie.magic == .SERIAL_COOKIE or cookie.magic == .SERIAL_COOKIE_NO_RUNCONTAINER);
-
-        ret.container_count = info.container_count;
-        assert(ret.container_count <= C.MAX_KEY_CARDINALITY); // data must be corrupted
-
-        const hasruns = cookie.magic == .SERIAL_COOKIE;
-
-        if (hasruns) {
-            ret.run_flags = (try r.readAlloc(fbaa, (ret.container_count + 7) / 8)).ptr;
-        }
-        ret.keys = (try fbaa.alloc(u16, ret.container_count)).ptr;
-        ret.cardinalities = (try fbaa.alloc(u32, ret.container_count)).ptr;
-        for (0..ret.container_count) |i| { // TODO maybe read N key_cards at a time, less looping here
-            const kc = try r.takeStruct(KeyCard, .little);
-            ret.keys[i] = kc.key;
-            ret.cardinalities[i] = @as(u32, kc.cardinality_minus1) + 1;
-        }
-
-        // skip file offsets
-        if (!hasruns or (hasruns and ret.container_count >= C.NO_OFFSET_THRESHOLD))
-            _ = try r.discard(.limited(ret.container_count * @sizeOf(u32)));
-
-        ret.containers = (try fbaa.alloc(Container, ret.container_count)).ptr;
-
-        ret.container_startpos = freader.logicalPos();
-        assert(ret.container_startpos == ret.portable_size());
-
-        for (0..ret.container_count) |k| { // calculate blocks needed to store containers
-            const thiscard = ret.cardinalities[k];
-            var isbitset = (thiscard > C.DEFAULT_MAX_SIZE);
-            var isrun = false;
-            if (hasruns and
-                ((ret.run_flags.?[k / 8] & @as(u8, 1) << @truncate(k % 8))) != 0)
-            {
-                isbitset = false;
-                isrun = true;
-            }
-            if (isbitset) {
-                _ = try r.discard(.limited(@sizeOf(root.Bitset)));
-                ret.n_blocks += C.BITSET_BLOCKS;
-            } else if (isrun) {
-                const n_runs: u32 = try r.takeInt(u16, .little);
-                _ = try r.discard(.limited(n_runs * 4));
-                const blocks_size = mem.alignForward(u32, n_runs * 4, C.BLOCK_LEN);
-                ret.n_blocks += @divExact(blocks_size, C.BLOCK_LEN);
-            } else {
-                _ = try r.discard(.limited(thiscard * 2));
-                const blocks_size = mem.alignForward(u32, thiscard * 2, C.BLOCK_LEN);
-                ret.n_blocks += @divExact(blocks_size, C.BLOCK_LEN);
-            }
-        }
-        assert(freader.size == null or freader.atEnd());
-        return ret;
-    }
+const HeaderInfo = struct {
+    headerblocks: u24,
+    containerblocks: u24,
+    containercount: u32,
 };
 
-test Header {
-    // check Header has same size as an auto layout, HeaderAuto.
-    const HeaderAuto = @Struct(.auto, null, std.meta.fieldNames(Header), misc.fieldTypes(Header), &@splat(.{}));
-    try testing.expectEqual(@sizeOf(Header), @sizeOf(HeaderAuto));
-    try testing.expectEqual(56, @sizeOf(Header));
-
-    const io = testing.io;
-    {
-        const f = try Io.Dir.cwd().openFile(io, "testdata/bitmapwithoutruns.bin", .{});
-        defer f.close(io);
-        try testing.expectEqual(160, (try Header.buffer_size_from_file(io, f)).buffer_size);
-    }
-    {
-        const f = try Io.Dir.cwd().openFile(io, "testdata/bitmapwithruns.bin", .{});
-        defer f.close(io);
-        try testing.expectEqual(160, (try Header.buffer_size_from_file(io, f)).buffer_size);
-    }
+/// returns HeaderInfo for the requested length of containers. minimum
+/// containercount is 256 in an attempt to minimize need for reallocation
+/// memcpys.
+fn header_info(len: u32) HeaderInfo {
+    return switch (len) {
+        0...256 => .{
+            .headerblocks = header_nblocks(256),
+            .containercount = 256,
+            .containerblocks = @intCast(256 * C.BITSET_BLOCKS),
+        },
+        257...1024 => .{
+            .headerblocks = header_nblocks(1024),
+            .containercount = 1024,
+            .containerblocks = @intCast(1024 * C.BITSET_BLOCKS),
+        },
+        1025...4096 => .{
+            .headerblocks = header_nblocks(4096),
+            .containercount = 4096,
+            .containerblocks = @intCast(4096 * C.BITSET_BLOCKS),
+        },
+        4097...16384 => .{
+            .headerblocks = header_nblocks(16384),
+            .containercount = 16384,
+            .containerblocks = @intCast(16384 * C.BITSET_BLOCKS),
+        },
+        else => unreachable, // TODO
+    };
 }
 
-pub fn deinit(r: *Bitmap, allocator: mem.Allocator) void {
-    r.pool.deinit(allocator);
-    r.header.deinit(allocator);
-}
-
-/// Allocates and returns a Bitmap as 2 allocations, read from
-/// `bitmap_file` which must be a seekable file.
-/// `read_buf` is a temporary buffer.
+/// Allocates and returns a Bitmap, read from `bitmap_file` which must be a
+/// seekable file. `read_buf` is a temporary buffer.
 /// TODO non-seekable files.
 pub fn portable_deserialize(
     allocator: mem.Allocator,
@@ -291,81 +105,111 @@ pub fn portable_deserialize(
     read_buf: []u8,
 ) !Bitmap {
     var freader = bitmap_file.reader(io, read_buf);
-    var header = try Header.deserialize_from_file_reader(allocator, &freader);
-    errdefer header.deinit(allocator);
+    const info = try Array.info_from_file_reader(&freader);
+    if (info.len == 0) return .empty;
+    const hinfo = header_info(info.len);
+    const totalblocks = hinfo.headerblocks + hinfo.containerblocks;
+    trace(@src(), "{} {}", .{ totalblocks, hinfo });
+    var blocks: std.ArrayList(Block) = try .initCapacity(allocator, totalblocks);
+    blocks.items.len = hinfo.headerblocks;
+    errdefer blocks.deinit(allocator);
 
-    // allocate container data
-    var pool: std.ArrayList(root.Block) = try .initCapacity(allocator, header.n_blocks);
-    errdefer pool.deinit(allocator);
-    pool.expandToCapacity();
+    const ra: *Array = mem.bytesAsValue(Array, blocks.items[0..C.HEADER_BLOCKS]);
+    ra.* = .empty;
+    ra.magic = info.cookie.magic;
+    ra.len = info.len;
+    ra.capacity = hinfo.containercount;
+    ra.containers = @ptrCast(&blocks.items[C.HEADER_BLOCKS]);
+    ra.keys = @ptrCast(@alignCast(ra.containers + ra.capacity));
+    var run_flags: root.RunFlags = undefined;
+    try ra.deserialize_file_reader(&freader, &run_flags);
+    assert(freader.logicalPos() == ra.portable_size());
 
-    // seek to start of container data and read containers into pool
-    try freader.seekTo(header.container_startpos);
+    var ret = Bitmap{ .header = .{
+        .cardinality = Container.MAX_CARDINALITY,
+        .blockoffset = @intCast(hinfo.headerblocks),
+        .nblocks_minus1 = 0,
+        .typecode = .array,
+    }, .blocks = blocks };
+
     var r = &freader.interface;
 
-    var pool_offset: u32 = 0;
-    for (0..header.container_count) |k| { // read container data
-        const thiscard = header.cardinalities[k];
+    var blockoffset: u24 = hinfo.headerblocks;
+    for (0..ra.len) |k| { // read container data
+        const c = &ra.containers[k];
+        const thiscard = c.cardinality;
         var isbitset = (thiscard > C.DEFAULT_MAX_SIZE);
         var isrun = false;
-        if (header.can_have_run_containers() and
-            ((header.run_flags.?[k / 8] & @as(u8, 1) << @truncate(k % 8))) != 0)
+        if (ra.can_have_run_containers() and
+            ((run_flags[k / 8] & @as(u8, 1) << @truncate(k % 8))) != 0)
         {
             isbitset = false;
             isrun = true;
         }
         if (isbitset) {
-            try r.readSliceAll(mem.asBytes(pool.items[pool_offset..][0..C.BITSET_BLOCKS]));
-            header.containers[k] = .{
-                .pool_offset = pool_offset,
-                .n_blocks = C.BITSET_BLOCKS,
-                .n_runs = undefined,
+            try r.readSliceAll(mem.asBytes(blocks.items.ptr[blockoffset..][0..C.BITSET_BLOCKS]));
+            c.* = .{
                 .typecode = .bitset,
+                .cardinality = thiscard,
+                .blockoffset = blockoffset,
+                .nblocks_minus1 = C.BITSET_BLOCKS - 1,
             };
-            pool_offset += C.BITSET_BLOCKS;
+            blockoffset += C.BITSET_BLOCKS;
         } else if (isrun) {
-            const n_runs: u32 = try r.takeInt(u16, .little);
-            const blocks_size = mem.alignForward(u32, n_runs * 4, C.BLOCK_LEN);
-            const n_blocks = @divExact(blocks_size, C.BLOCK_LEN);
-            const runs = misc.asSlice([]align(C.BLOCK_ALIGN) root.Rle16, pool.items[pool_offset..][0..n_blocks]);
-            try r.readSliceEndian(root.Rle16, runs[0..n_runs], .little);
-            header.containers[k] = .{
-                .pool_offset = pool_offset,
-                .n_blocks = @intCast(n_blocks),
-                .n_runs = @intCast(n_runs),
+            const nruns: u32 = try r.takeInt(u16, .little);
+            const blocks_size = mem.alignForward(u32, nruns * @sizeOf(root.Rle16), C.BLOCK_BYTES);
+            const nblocks = @divExact(blocks_size, C.BLOCK_BYTES);
+            const runs = misc.asSlice([]align(C.BLOCK_ALIGN) root.Rle16, blocks.items.ptr[blockoffset..][0..nblocks]);
+            try r.readSliceEndian(root.Rle16, runs[0..nruns], .little);
+            c.* = .{
                 .typecode = .run,
+                .cardinality = @intCast(nruns),
+                .blockoffset = blockoffset,
+                .nblocks_minus1 = @intCast(nblocks - 1),
             };
-            pool_offset += n_blocks;
+            blockoffset += @intCast(nblocks);
         } else { // array container
-            const blocks_size = mem.alignForward(u32, thiscard * 2, C.BLOCK_LEN);
-            const n_blocks = @divExact(blocks_size, C.BLOCK_LEN);
-            const array = misc.asSlice([]align(C.BLOCK_ALIGN) u16, pool.items[pool_offset..]);
-            try r.readSliceEndian(u16, array[0..thiscard], .little);
-            header.containers[k] = .{
-                .pool_offset = pool_offset,
-                .n_blocks = @intCast(n_blocks),
-                .n_runs = undefined,
+            const blocks_size = mem.alignForward(u32, thiscard * @sizeOf(u16), C.BLOCK_BYTES);
+            const nblocks = @divExact(blocks_size, C.BLOCK_BYTES);
+            const values = misc.asSlice([]align(C.BLOCK_ALIGN) u16, blocks.items.ptr[blockoffset..][0..nblocks]);
+            try r.readSliceEndian(u16, values[0..thiscard], .little);
+            c.* = .{
                 .typecode = .array,
+                .cardinality = thiscard,
+                .blockoffset = blockoffset,
+                .nblocks_minus1 = @intCast(nblocks - 1),
             };
-            pool_offset += n_blocks;
+            blockoffset += @intCast(nblocks);
         }
     }
 
     assert(freader.size == null or freader.atEnd());
-
-    const ret = Bitmap{ .header = header, .pool = pool };
+    assert(blockoffset <= totalblocks);
+    assert(ret.blocks.items.len + hinfo.containerblocks <= ret.blocks.capacity);
+    ret.blocks.items.len += hinfo.containerblocks;
+    trace(@src(), "ra={f}", .{ra});
 
     // FIXME - portable_size_in_bytes() doesn't match logicalPos() on testdatawithruns - 48056 48050
     if (freader.logicalPos() != ret.portable_size_in_bytes()) {
-        // misc.trace(@This(), "portable_deserialize", "Error: readerpos={} portablesize={}", .{ freader.logicalPos(), ret.portable_size_in_bytes() });
+        // trace(@src(), "Error: readerpos={} portablesize={}", .{ freader.logicalPos(), ret.portable_size_in_bytes() });
         // FIXME // assert(false);
     }
     return ret;
 }
 
+pub fn insert_new_kv_at(r: *Bitmap, allocator: mem.Allocator, key: u16, c: Container, i: u32) !void {
+    try r.extend_array(allocator, 1);
+    const a = r.get_header();
+    @memmove(a.keys + i + 1, a.slice(.keys, .len)[i..]);
+    @memmove(a.containers + i + 1, a.slice(.containers, .len)[i..]);
+    a.keys[i] = key;
+    a.containers[i] = c;
+    a.len += 1;
+}
+
 /// returns count of `vals` added
 pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !usize {
-    // misc.trace(@This(), "add_many", "vals {?}..{?}:{} container_count {}", .{ if (vals.len > 0) vals[0] else null, if (vals.len > 1) vals[vals.len - 1] else null, vals.len, r.header.container_count });
+    trace(@src(), "vals {?}..{?}:{}", .{ if (vals.len > 0) vals[0] else null, if (vals.len > 1) vals[vals.len - 1] else null, vals.len });
     var ret: usize = 0;
     for (vals) |v| {
         ret += @intFromBool(try r.add_checked(allocator, v));
@@ -373,243 +217,283 @@ pub fn add_many(r: *Bitmap, allocator: mem.Allocator, vals: []const u32) !usize 
     return ret;
 }
 
-/// returns true when `val` was added to the bitmap, false if already present.
 pub fn add(r: *Bitmap, allocator: mem.Allocator, val: u32) !void {
     _ = try r.add_checked(allocator, val);
 }
 
+/// returns true when `value` was added to the bitmap, false if already present.
 pub fn add_checked(r: *Bitmap, allocator: mem.Allocator, value: u32) !bool {
     const key: u16, const valuelow: u16 = .{ @truncate(value >> 16), @truncate(value) };
-    const mcontaineridx = misc.binarySearch(r.header.get_keys(), key);
+    if (r.header == Container.uninit) {
+        @branchHint(.unlikely);
+        assert(r.blocks.capacity == 0);
+        _ = try r.create_with_capacity(allocator, 0);
+    }
+    // trace(@src(), "{*} {*}", .{ r.blocks.items, r.get_header().keys });
+    assert(@intFromPtr(r.get_header().containers + r.get_header().capacity) == @intFromPtr(r.get_header().keys));
+    const mcontaineridx = misc.binarySearch(r.get_header().slice(.keys, .len), key);
+    const containeridx: u32 = @bitCast(mcontaineridx);
     if (mcontaineridx >= 0) { // key found
-        const containeridx: u32 = @intCast(mcontaineridx);
-        const card = r.header.get_cards()[containeridx];
-        const c = r.header.containers[containeridx];
-        assert(c.n_blocks <= 256);
-        const bytes = mem.sliceAsBytes(r.pool.items[c.pool_offset..][0..c.n_blocks]);
-
-        if (c.typecode == .bitset) {
-            const wordidx, const idx = .{ value / 64, value % 64 };
-            const bitset_values = mem.bytesAsSlice(u64, bytes);
-            const found = bitset_values[wordidx] & @as(u64, 1) << @intCast(idx) != 0;
-            if (!found) {
-                bitset_values[wordidx] |= @as(u64, 1) << @intCast(idx);
-                r.header.cardinalities[containeridx] += 1;
-                return true;
+        const c = &r.get_header().containers[containeridx];
+        const card = c.cardinality;
+        // trace(@src(), "key found container={} {any}", .{ c, c.blocks_as(.array, r) });
+        const c2 = try c.add(allocator, r, valuelow);
+        if (c.* != c2) {
+            // skip deinit of inplace array/bitset conversion
+            if (c.blockoffset != c2.blockoffset) {
+                c.deinit(allocator, r);
             }
-            return false;
-        } else if (c.typecode == .array) {
-            assert(card <= 4096);
-            const values = mem.bytesAsSlice(u16, bytes);
-            const valuesidx = misc.binarySearch(values[0..card], valuelow);
-            // std.debug.print("key found card {} found idx {} containers {}\n", .{ card, valuesidx, m });
-            if (valuesidx < 0) { // value not found
-                if (card == 4096) { // array container full, promote to bitset
-                    if (c.pool_offset + c.n_blocks == r.pool.items.len) { // last block, append/overwrite ok
-                        const pool_offset = r.pool.items.len;
-                        const newblocks = try r.pool.addManyAsSlice(allocator, C.BITSET_BLOCKS);
-                        @memset(newblocks, @splat(0));
-                        const bitset = misc.asSlice([]align(C.BLOCK_ALIGN) u64, newblocks);
-                        // values may be invalidated - read values again
-                        for (misc.asSlice([]align(C.BLOCK_ALIGN) const u16, r.pool.items[c.pool_offset..][0..c.n_blocks])) |val| {
-                            const wordidx, const idx = .{ val / 64, val % 64 };
-                            bitset[wordidx] |= @as(u64, 1) << @intCast(idx);
-                        }
-                        const wordidx, const idx = .{ value / 64, value % 64 };
-                        bitset[wordidx] |= @as(u64, 1) << @intCast(idx);
-                        r.header.cardinalities[containeridx] = 4097;
-                        r.header.containers[containeridx] = .{
-                            .typecode = .bitset,
-                            .n_blocks = C.BITSET_BLOCKS,
-                            .pool_offset = c.pool_offset,
-                            .n_runs = undefined,
-                        };
-                        @memcpy( // overwrite array blocks with bitset blocks
-                            r.pool.items[c.pool_offset..][0..C.BITSET_BLOCKS],
-                            r.pool.items[pool_offset..][0..C.BITSET_BLOCKS],
-                        );
-                        r.pool.items.len = c.pool_offset + C.BITSET_BLOCKS; // shrink len
-                    } else { // move contaier blocks
-                        unreachable; // TODO
-                    }
-                } else if (card < @as(u32, c.n_blocks) * C.BLOCK_LEN16) { // room in block
-                    values[@intCast(-valuesidx - 1)] = valuelow;
-                    r.header.get_cards()[containeridx] += 1;
-                } else { // container blocks full, add new block
-                    if (c.pool_offset + c.n_blocks == r.pool.items.len) { // last block, append ok
-                        _ = try r.pool.addOne(allocator);
-                        const newvalues = misc.asSlice(
-                            []align(C.BLOCK_ALIGN) u16,
-                            r.pool.items[c.pool_offset..][0 .. c.n_blocks + 1],
-                        );
-                        newvalues[@intCast(-valuesidx - 1)] = valuelow;
-                        r.header.get_cards()[containeridx] += 1;
-                        r.header.get_containers()[containeridx].n_blocks += 1;
-                    } else { // move contaier blocks
-                        unreachable; // TODO
-                    }
-                }
-            }
-            return true;
+            r.get_header().slice(.containers, .len)[containeridx] = c2;
         }
-        return false;
+        return card != r.get_header().slice(.containers, .len)[containeridx].cardinality;
     } else { // key not found, add new array container
         const insertidx: u32 = @intCast(-mcontaineridx - 1);
-        // std.debug.print("insert_value() - new container - j {} v {} container_count {}\n", .{ j, v, r.header.container_count });
+        trace(@src(), "new container - insertidx={} header {}", .{ insertidx, r.get_header() });
 
-        const buf_size = Header.buffer_size_from_magic_count(r.header.magic, r.header.container_count + 1);
-        const buf = try allocator.alloc(u8, buf_size);
-        errdefer allocator.free(buf);
-        var fba = std.heap.FixedBufferAllocator.init(buf);
-        const fbaa = fba.allocator();
-        var newh = r.header;
-        newh.container_count += 1;
-        newh.n_blocks += 1;
-        // std.debug.print("h.container_count {} newh.container_count {}\n", .{ r.header.container_count, newh.container_count });
-        if (r.header.can_have_run_containers()) { // copy run flags
-            const l = (newh.container_count + 7) / 8;
-            newh.run_flags = (try fbaa.alloc(u8, l)).ptr;
-            std.debug.print("old run flags {any}\n", .{r.header.get_run_flags()});
-            std.debug.print("new run flags {any}\n", .{newh.get_run_flags()});
-            unreachable; // TODO
-        }
-
-        // alloc/copy new keys, cards, containers
-        const newkeys = try fbaa.alloc(u16, newh.container_count);
-        @memcpy(newkeys.ptr, r.header.keys[0..insertidx]);
-        newkeys[insertidx] = key;
-        @memcpy(newkeys.ptr + insertidx + 1, r.header.keys[insertidx..r.header.container_count]);
-        // std.debug.print("newkeys {any}\n", .{newkeys});
-        newh.keys = newkeys.ptr;
-
-        newh.cardinalities = (try fbaa.alloc(u32, newh.container_count)).ptr;
-        @memcpy(newh.cardinalities, r.header.cardinalities[0..insertidx]);
-        newh.cardinalities[insertidx] = 1;
-        @memcpy(newh.cardinalities + insertidx + 1, r.header.cardinalities[insertidx..r.header.container_count]);
-
-        newh.containers = (try fbaa.alloc(Container, newh.container_count)).ptr;
-        @memcpy(newh.containers, r.header.containers[0..insertidx]);
-        newh.containers[insertidx] = .{
-            .n_runs = undefined,
-            .pool_offset = @intCast(r.pool.items.len),
-            .n_blocks = 1,
+        var newac: Container = .{
+            .blockoffset = @intCast(r.blocks.items.len),
+            .nblocks_minus1 = 0,
+            .cardinality = 0,
             .typecode = .array,
         };
-        @memcpy(newh.containers + insertidx + 1, r.header.containers[insertidx..r.header.container_count]);
+        assert(r.blocks.items.len < r.blocks.capacity); // TODO grow blocks
+        r.blocks.items.len += 1;
 
-        const block = try r.pool.addOne(allocator);
-        const block_bytes = mem.asBytes(block);
-        const values = mem.bytesAsSlice(u16, block_bytes);
-        values[0] = valuelow;
-        r.header.deinit(allocator);
-        r.header = newh;
-
+        _ = try newac.add(allocator, r, valuelow); // assume it stays an array container
+        try r.insert_new_kv_at(allocator, key, newac, insertidx);
         return true;
     }
 }
 
+pub fn init_container_with_cardinality(
+    r: *Bitmap,
+    allocator: mem.Allocator,
+    tc: Typecode,
+    /// array.cardinality or run.nruns
+    card_or_nruns: u32,
+) !Container {
+    const blockoffset = r.blocks.items.len;
+    trace(@src(), "{t} card_or_nruns={} buffer_size={} header={f}", .{ tc, card_or_nruns, r.get_header().buffer_size(), r.get_header() });
+    try r.extend_array(allocator, 1);
+    trace(@src(), "extended header={f}", .{r.get_header()});
+    r.get_header().len += 1;
+
+    const c = switch (tc) {
+        .run => {
+            const blocks_size = mem.alignForward(u32, card_or_nruns * @sizeOf(root.Rle16), C.BLOCK_BYTES);
+            const nblocks = @divExact(blocks_size, C.BLOCK_BYTES);
+            _ = try r.blocks.addManyAsSlice(allocator, nblocks);
+            if (true) unreachable; // TODO incorrect ^
+            return .{
+                .typecode = .run,
+                .cardinality = @intCast(card_or_nruns),
+                .blockoffset = @intCast(blockoffset),
+                .nblocks_minus1 = @intCast(nblocks - 1),
+            };
+        },
+        .array => {
+            const blocks_size = mem.alignForward(u32, card_or_nruns * @sizeOf(u16), C.BLOCK_BYTES);
+            const nblocks = @divExact(blocks_size, C.BLOCK_BYTES);
+            _ = try r.blocks.addManyAsSlice(allocator, nblocks);
+            if (true) unreachable; // TODO incorrect ^
+            return .{
+                .typecode = .array,
+                .cardinality = @intCast(card_or_nruns),
+                .blockoffset = @intCast(blockoffset),
+                .nblocks_minus1 = @intCast(nblocks - 1),
+            };
+        },
+        .bitset => unreachable,
+        .shared => unreachable,
+    };
+
+    return c;
+}
+
+fn append_first_assume_capacity(r: *Bitmap, c: Container, container_value: anytype) void {
+    switch (@TypeOf(container_value)) {
+        root.Rle16 => {
+            assert(c.typecode == .run);
+            const runs = misc.asSlice(
+                []align(C.BLOCK_ALIGN) root.Rle16,
+                r.blocks.items[c.blockoffset..][0..c.nblocks()],
+            );
+            runs[0] = container_value;
+        },
+        u16 => {
+            assert(c.typecode == .array);
+            const values = misc.asSlice(
+                []align(C.BLOCK_ALIGN) u16,
+                r.blocks.items[c.blockoffset..][0..c.nblocks()],
+            );
+            values[0] = container_value;
+        },
+        else => unreachable, // unsupported type
+    }
+}
+
+/// The new container consists of a single run [start,stop).
+/// It is required that stop>start, the caller is responsible for this check.
+/// It is required that stop <= (1<<16), the caller is responsibe for this
+/// check. The cardinality of the created container is stop - start.
+pub fn init_range(r: *Bitmap, allocator: mem.Allocator, tc: Typecode, start: u32, stop: u32) !Container {
+    switch (tc) {
+        .run => {
+            const c = try r.init_container_with_cardinality(allocator, tc, 1);
+            trace(@src(), "run {} {}", .{ c.cardinality, r.get_header() });
+            r.append_first_assume_capacity(c, root.Rle16{
+                .value = @truncate(start),
+                .length = @truncate(stop - start - 1),
+            });
+            return c;
+        },
+        .array => unreachable,
+        .bitset => unreachable,
+        .shared => unreachable,
+    }
+}
+
+/// make a container with a run of ones
 ///
+/// initially always use a run container, even if an array might be marginally
+/// smaller
+pub fn range_of_ones(r: *Bitmap, allocator: mem.Allocator, range_start: u32, range_end: u32) !Container {
+    assert(range_end >= range_start);
+    const card = range_end - range_start + 1;
+    trace(@src(), "{}-{}:{}", .{ range_start, range_end, card });
+    return if (card <= 2)
+        try r.init_range(allocator, .array, range_start, range_end)
+    else
+        try r.init_range(allocator, .run, range_start, range_end);
+}
+
+/// Create a container with all the values between in [min,max) at a
+/// distance k*step from min.
+pub fn from_range(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32, step: u16) !Container {
+    // std.debug.print("Container.from_range {}-{} step {}\n", .{ min, max, step });
+    if (step == 0) return .uninit; // being paranoid
+    if (step == 1) {
+        return try r.range_of_ones(allocator, min, max);
+    }
+    const size = (max - min + step - 1) / step;
+    if (size <= C.DEFAULT_MAX_SIZE) { // array container
+        unreachable;
+        // var array = try ArrayContainer.init_with_capacity(allocator, size);
+        // try array.add_from_range(allocator, min, max, step);
+        // assert(array.cardinality == size);
+        // return try create(allocator, array);
+    } else { // bitset container
+        unreachable;
+        // var bitset = try BitsetContainer.create(allocator);
+        // bitset.add_range(min, max, step);
+        // assert(bitset.cardinality == size);
+        // return try create(allocator, bitset);
+    }
+}
+
+fn add_range_to_container(r: *Bitmap, allocator: mem.Allocator, container: Container.Id, container_min: u32, container_max: u32) !Container {
+    _ = r;
+    _ = allocator;
+    _ = container;
+    _ = container_min;
+    _ = container_max;
+    unreachable;
+}
+
+fn replace_key_and_container_at_index(r: *Bitmap, i: u32, key: u16, c: Container) void {
+    assert(i < r.get_header().len);
+    r.get_header().slice(.containers, .len)[i] = c;
+    r.get_header().slice(.keys, .len)[i] = key;
+}
+
 /// Add all values in range [min, max]
 pub fn add_range_closed(r: *Bitmap, allocator: mem.Allocator, min: u32, max: u32) !void {
-    _ = allocator; // autofix
-    // std.debug.print("add_range_closed({},{})\n", .{ min, max });
+    trace(@src(), "({},{}) size={}", .{ min, max, r.get_header().len });
     if (min > max) return;
     const min_key = min >> 16;
     const max_key = max >> 16;
 
     const num_required_containers = max_key - min_key + 1;
-    const h = r.header;
-    const suffix_length = misc.count_greater(h.get_keys(), @truncate(max_key));
+    const suffix_length = misc.count_greater(r.get_header().slice(.keys, .len), @truncate(max_key));
     const prefix_length = misc.count_less(
-        h.get_keys()[0 .. h.container_count - suffix_length],
+        r.get_header().slice(.keys, .len)[0 .. r.get_header().len - suffix_length],
         @truncate(min_key),
     );
-    const common_length = h.container_count - prefix_length - suffix_length;
+    const common_length = r.get_header().len - prefix_length - suffix_length;
 
-    // std.debug.print("num_required_containers {}, common_length {}, {f}\n", .{ num_required_containers, common_length, ra });
+    trace(@src(), "num_required_containers={} prefix_length={} suffix_length={} common_length={}", .{ num_required_containers, prefix_length, suffix_length, common_length });
     if (num_required_containers > common_length) {
-        unreachable; // TODO
-        // try ra.shift_tail(
-        //     allocator,
-        //     suffix_length,
-        //     @intCast(num_required_containers -% common_length),
-        // );
+        try r.shift_tail(
+            allocator,
+            suffix_length,
+            @bitCast(num_required_containers -% common_length),
+        );
     }
 
     var src = misc.cast(i32, prefix_length + common_length) - 1;
-    var dst = misc.cast(i32, h.container_count - suffix_length) - 1;
+    var dst = misc.cast(i32, r.get_header().len - suffix_length) - 1;
     var key = max_key;
     while (key != min_key -% 1) : (key -%= 1) { // beware of min_key==0
         // std.debug.print("key {} min_key {} max_key {}\n", .{ key, min_key, max_key });
         const container_min = if (min_key == key) min & 0xffff else 0;
-        _ = container_min; // autofix
         const container_max = if (max_key == key) max & 0xffff else 0xffff;
-        _ = container_max; // autofix
         // std.debug.print("src {}\n", .{src});
-        if (src >= 0 and h.get_keys()[@intCast(src)] == key) {
-            const srcu: u16 = @intCast(src);
-            _ = srcu; // autofix
-            // ra.unshare_container_at_index(srcu);
-            // new_container =
-            //     try s.items(.container)[srcu].add_range(allocator, container_min, container_max);
-            // if (new_container != s.items(.container)[srcu]) {
-            //     s.items(.container)[srcu].deinit(allocator);
-            // }
+        var newc: Container = .uninit;
+        if (src >= 0 and r.get_header().slice(.keys, .len)[@intCast(src)] == key) {
+            const srcu: Container.Id = @enumFromInt(src);
+            // TODO // ra.unshare_container_at_index(srcu);
+            newc = try r.add_range_to_container(allocator, srcu, container_min, container_max);
+            if (newc != r.get_header().get_container(srcu)) {
+                unreachable; // TODO r.deinit_container(allocator, srcu);
+            }
             src -= 1;
-            unreachable; // TODO
         } else {
-            // new_container = try .from_range(allocator, container_min, container_max + 1, 1);
-            unreachable; // TODO
+            newc = try r.from_range(allocator, container_min, container_max + 1, 1);
         }
-        // std.debug.print("dst {}, new_container {f}\n", .{ dst, new_container });
-        // assert(!new_container.is_empty());
-        // ra.replace_key_and_container_at_index(@intCast(dst), @truncate(key), new_container);
+        trace(@src(), "dst {}, newc {}", .{ dst, newc });
+        assert(newc != Container.uninit);
+        r.replace_key_and_container_at_index(@intCast(dst), @truncate(key), newc);
         dst -= 1;
-        unreachable; // TODO
     }
 }
 
 /// Add all values in range [min, max)
 pub fn add_range(r: *Bitmap, allocator: mem.Allocator, min: u64, max: u64) !void {
-    misc.trace(@This(), "add_range", "{} {}", .{ min, max });
+    trace(@src(), "{} {}", .{ min, max });
     if (max <= min or min > C.MAX_VALUE_CARDINALITY) {
         return;
     }
     try r.add_range_closed(allocator, @intCast(min), @intCast(max - 1));
 }
 
-pub fn contains(r: Bitmap, val: u32) bool {
-    const h = r.header;
+pub fn contains(r: *const Bitmap, val: u32) bool {
+    const h = r.get_header();
+    // trace(@src(), "{}/{} {*} {*}", .{ h.len, h.capacity, h.containers, h.keys });
     const key: u16 = @truncate(val >> 16);
     // the next function call involves a binary search and lots of branching.
-    const i = misc.binarySearch(h.get_keys(), key);
+    // trace(@src(), "{any}", .{h.slice(.keys, .len)});
+    const i = misc.binarySearch(h.slice(.keys, .len), key);
     // std.debug.print("Bitmap.contains({}) key {} i {}\n", .{ val, key, i });
     if (i < 0) return false;
     const iu: u32 = @bitCast(i);
 
     // rest might be a tad expensive, possibly involving another round of binary search
-    const c = h.get_containers()[iu];
+    const c: Container = h.slice(.containers, .len)[iu];
 
-    const card: u32 = h.cardinalities[iu];
     const pos: u16 = @truncate(val);
     switch (c.typecode) {
         .bitset => {
             const word_idx = pos / 64;
             const bit_idx = pos % 64;
-            const bitset: *root.Bitset = @ptrCast(&r.pool.items[c.pool_offset]);
-            return (bitset[word_idx] & (@as(u64, 1) << @intCast(bit_idx))) != 0;
+            return (c.blocks_as(.bitset, r)[word_idx] & (@as(u64, 1) << @intCast(bit_idx))) != 0;
         },
         .array => {
-            const blocks_size = mem.alignForward(u32, card * 2, C.BLOCK_LEN);
-            const n_blocks = @divExact(blocks_size, C.BLOCK_LEN);
-            const values = misc.asSlice(
-                []align(C.BLOCK_ALIGN) const u16,
-                r.pool.items[c.pool_offset..][0..n_blocks],
-            )[0..card];
+            const values = c.blocks_as(.array, r)[0..c.cardinality];
+            // trace(@src(), "{} {any}", .{ c, values });
 
             // binary search with fallback to linear search for short ranges
             var low: i32 = 0;
-            var high = @as(i32, @intCast(card));
+            var high = @as(i32, @intCast(c.cardinality)) - 1;
             while (high >= low + 16) {
                 const middleIndex = (low + high) >> 1;
                 const middleValue = values[@intCast(middleIndex)];
@@ -631,11 +515,7 @@ pub fn contains(r: Bitmap, val: u32) bool {
             return false;
         },
         .run => {
-            const blocks_size = mem.alignForward(u32, @as(u32, c.n_runs) * @sizeOf(root.Rle16), C.BLOCK_LEN);
-            const n_blocks = @divExact(blocks_size, C.BLOCK_LEN);
-            const run_slice = misc.asSlice([]align(C.BLOCK_ALIGN) const root.Rle16, r.pool.items[c.pool_offset..][0..n_blocks]);
-
-            const runs = run_slice[0..c.n_runs];
+            const runs = c.blocks_as(.run, r)[0..c.cardinality];
             var index = misc.interleavedBinarySearch(runs, pos);
             if (index >= 0) return true;
             index = -index - 2; // points to preceding value, possibly -1
@@ -650,46 +530,25 @@ pub fn contains(r: Bitmap, val: u32) bool {
 }
 
 /// true if the two bitmaps contain the same elements.
-pub fn equals(r1: Bitmap, r2: Bitmap) bool {
-    const h1 = r1.header;
-    const h2 = r2.header;
-    if (h1.container_count != h2.container_count)
+pub fn equals(r1: *const Bitmap, r2: *const Bitmap) bool {
+    // trace(@src(), "r1.header={}", .{r1.header});
+    if (r1.header == Container.uninit) return r2.header == Container.uninit;
+    const h1 = r1.get_header();
+    const h2 = r2.get_header();
+    if (h1.len != h2.len)
         return false;
 
-    for (h1.get_keys(), h2.get_keys()) |k1, k2| {
+    for (h1.slice(.keys, .len), h2.slice(.keys, .len)) |k1, k2| {
         if (k1 != k2) return false;
     }
 
     for (
-        h1.get_cards(),
-        h2.get_cards(),
-        h1.get_containers(),
-        h2.get_containers(),
-    ) |card1, card2, c1, c2| {
-        if (c1.typecode != c2.typecode or card1 != card2)
-            return false;
-
-        const c1bytes = mem.sliceAsBytes(r1.pool.items[c1.pool_offset..][0..c1.n_blocks]);
-        const c2bytes = mem.sliceAsBytes(r2.pool.items[c2.pool_offset..][0..c2.n_blocks]);
-        if (!switch (c1.typecode) {
-            .array => mem.eql(
-                u16,
-                mem.bytesAsSlice(u16, c1bytes)[0..card1],
-                mem.bytesAsSlice(u16, c2bytes)[0..card1],
-            ),
-            .run => c1.n_runs == c2.n_runs and mem.eql(
-                u16,
-                mem.bytesAsSlice(u16, c1bytes)[0..c1.n_runs],
-                mem.bytesAsSlice(u16, c2bytes)[0..c1.n_runs],
-            ),
-            .bitset => mem.eql(
-                u64,
-                mem.bytesAsSlice(u64, c1bytes[0..@sizeOf(root.Bitset)]),
-                mem.bytesAsSlice(u64, c2bytes[0..@sizeOf(root.Bitset)]),
-            ),
-            .shared => unreachable,
-        })
-            return false;
+        h1.slice(.containers, .len),
+        h2.slice(.containers, .len),
+    ) |c1, c2| {
+        trace(@src(), "c1={}", .{c1});
+        trace(@src(), "c2={}", .{c2});
+        if (!c1.equals(c2, r1, r2)) return false;
     }
 
     return true;
@@ -700,62 +559,72 @@ pub fn equals(r1: Bitmap, r2: Bitmap) bool {
 ///
 pub fn get_index(r: Bitmap, v: u32) i32 {
     const key: u16 = @truncate(v >> 16);
-    const h = r.header;
-    const keys = h.get_keys();
-    if (h.container_count == 0 or keys[h.container_count - 1] == key)
-        return @as(i32, @intCast(h.container_count)) - 1;
+    const h = r.get_header();
+    const keys = h.slice(.keys, .len);
+    if (h.len == 0 or keys[h.len - 1] == key)
+        return @as(i32, @intCast(h.len)) - 1;
     return misc.binarySearch(keys, key);
 }
 
 pub fn has_run_container(r: Bitmap) bool {
-    return r.header.has_run_container();
+    return r.get_header().has_run_container();
 }
 
 pub fn portable_header_size(r: Bitmap) usize {
-    return r.header.portable_size();
+    if (r.header == Container.uninit) return 8;
+    return r.get_header().portable_size();
 }
 
 pub fn portable_size_in_bytes(r: Bitmap) usize {
-    return r.header.portable_size_in_bytes();
+    if (r.header == Container.uninit) return 8;
+    return r.get_header().portable_size_in_bytes();
 }
 
 /// Writes the container to `w`, returns how many bytes were written.
 /// The number of bytes written should be equal to `portable_size_in_bytes()`.
-pub fn write(r: Bitmap, c: Container, card: u32, w: *Io.Writer) !usize {
+pub fn write(r: *const Bitmap, c: Container, w: *Io.Writer) !usize {
     switch (c.typecode) {
         .array => {
             // std.debug.print("array card {}\n", .{ card });
-            const bytes = mem.sliceAsBytes(r.pool.items[c.pool_offset..][0..c.n_blocks]);
-            try w.writeSliceEndian(u16, mem.bytesAsSlice(u16, bytes)[0..card], .little);
-            return card * 2;
+            const values = c.blocks_as(.array, r);
+            try w.writeSliceEndian(u16, values[0..c.cardinality], .little);
+            return c.cardinality * 2;
         },
         .run => unreachable,
         .bitset => {
-            assert(c.n_blocks == C.BITSET_BLOCKS);
-            const bytes = mem.sliceAsBytes(r.pool.items[c.pool_offset..][0..c.n_blocks]);
-            try w.writeSliceEndian(u64, mem.bytesAsSlice(u64, bytes), .little);
+            assert(c.nblocks() == C.BITSET_BLOCKS);
+            try w.writeSliceEndian(u64, c.blocks_as(.bitset, r), .little);
             return @sizeOf(root.Bitset);
         },
         .shared => unreachable,
     }
 }
 
+fn portable_serialize_empty(w: *std.Io.Writer) !usize {
+    try w.writeStruct(root.Cookie{
+        .magic = .SERIAL_COOKIE_NO_RUNCONTAINER,
+        .cardinality_minus1 = 0,
+    }, .little);
+    try w.writeInt(u32, 0, .little);
+    return @sizeOf(u32) * 2;
+}
+
+// TODO replace temp_allocator with RunFlags
 pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, temp_allocator: mem.Allocator) !usize {
-    const h = r.header;
-    const cslen = h.container_count;
+    if (r.header == Container.uninit) {
+        return portable_serialize_empty(w);
+    }
+
+    const h = r.get_header();
+    const cslen = h.len;
     if (cslen == 0) {
-        try w.writeStruct(root.Cookie{
-            .magic = .SERIAL_COOKIE_NO_RUNCONTAINER,
-            .cardinality_minus1 = 0,
-        }, .little);
-        try w.writeInt(u32, 0, .little);
-        return @sizeOf(u32) * 2;
+        return portable_serialize_empty(w);
     }
 
     var startOffset: u32 = 0;
     var written_count: usize = 0;
     const hasrun = r.has_run_container();
-    const cs = h.get_containers();
+    const cs = h.slice(.containers, .len);
     if (hasrun) {
         try w.writeStruct(root.Cookie{
             .magic = .SERIAL_COOKIE,
@@ -785,32 +654,30 @@ pub fn portable_serialize(r: Bitmap, w: *std.Io.Writer, temp_allocator: mem.Allo
         written_count += @sizeOf(root.Cookie) + @sizeOf(u32);
         startOffset = 4 + 4 + 4 * cslen + 4 * cslen;
     }
-    const cards = h.get_cards();
-    for (h.get_keys(), cards) |k, card| {
+
+    for (h.slice(.keys, .len), cs) |k, c| {
         try w.writeInt(u16, k, .little);
+        assert(c.typecode == .array or c.typecode == .bitset);
         // get_cardinality returns a value in [1,1<<16], subtracting one
         // we get [0,1<<16 - 1] which fits in 16 bits
-        try w.writeInt(u16, @intCast(card - 1), .little);
+        try w.writeInt(u16, @intCast(c.cardinality - 1), .little);
         written_count += @sizeOf(u16) + @sizeOf(u16);
     }
     if ((!hasrun) or (cslen >= C.NO_OFFSET_THRESHOLD)) {
         // write the containers offsets
-        for (cs, cards) |c, card| {
+        for (cs) |c| {
             try w.writeInt(u32, startOffset, .little);
             written_count += @sizeOf(u32);
-            startOffset += @intCast(c.size_in_bytes(card));
+            startOffset += @intCast(c.size_in_bytes());
         }
     }
 
-    for (cs, cards) |c, card| {
-        written_count += try r.write(c, card, w);
+    for (cs) |c| {
+        assert(c.typecode == .array or c.typecode == .bitset);
+        written_count += try r.write(c, w);
     }
 
     return written_count;
-}
-
-pub fn set_container_at_index(r: *Bitmap, i: u32, c: Container) void {
-    r.header.get_containers()[i] = c;
 }
 
 ///
@@ -821,74 +688,69 @@ pub fn set_container_at_index(r: *Bitmap, i: u32, c: Container) void {
 /// Additional savings might be possible by calling `shrinkToFit()`.
 pub fn run_optimize(r: *Bitmap, allocator: mem.Allocator) !bool {
     var answer = false;
-    for (r.header.get_containers(), r.header.get_cards(), 0..) |*c, card, i| {
-        // r.unshare_container_at_index(@intCast(i)); // TODO: this introduces extra cloning!
+    for (r.get_header().slice(.containers, .len), 0..) |c, i| {
+        // TODO // r.unshare_container_at_index(@intCast(i)); // TODO: this introduces extra cloning!
 
-        const c1 = try r.convert_run_optimize(c, card, allocator);
+        const c1 = try r.convert_run_optimize(c, allocator);
         if (c1.typecode == .run) answer = true;
-        if (c.* != c1) {
-            // std.debug.print("run_optimize. converted {f} to {f}\n", .{ c, c1 });
-            r.set_container_at_index(@intCast(i), c1);
-        }
+        r.get_header().slice(.containers, .len)[@intCast(i)] = c1;
     }
     return answer;
 }
 
 /// Get the cardinality of the bitmap (number of elements).
-pub fn cardinality(r: Bitmap) u64 {
+pub fn cardinality(r: *const Bitmap) u64 {
+    if (r.header == Container.uninit) return 0;
     var card: u64 = 0;
-    for (r.header.get_cards()) |c| card += c;
+    for (r.get_header().slice(.containers, .len)) |c| card += c.compute_cardinality(r);
     return card;
 }
 pub const get_cardinality = cardinality;
 
-fn array_number_of_runs(r: *Bitmap, c: *const Container) u32 {
+fn array_number_of_runs(r: *Bitmap, c: Container) u32 {
     // Can SIMD work here?
     var nr_runs: u32 = 0;
     var prev: i32 = -2;
-    const start: [*]u16 = @ptrCast(&r.pool.items[c.pool_offset]);
+    const start: [*]u16 = @ptrCast(&r.blocks.items[c.blockoffset]);
     var p = start;
-    const card = r.header.cardinalities[c - r.header.containers];
-
+    const card = c.cardinality;
     while (p != start + card) : (p += 1) {
         if (p[0] != prev + 1) nr_runs += 1;
         prev = p[0];
     }
     return nr_runs;
 }
+
 /// once converted, the original container is disposed here, rather than
 /// in roaring_array
 ///
-// TODO: split into run-  array-  and bitset-  subfunctions for sanity;
+// TODO: split into run- array- and bitset- subfunctions for sanity;
 // a few function calls won't really matter.
-pub fn convert_run_optimize(r: *Bitmap, c: *const Container, card: u32, allocator: mem.Allocator) !Container {
-    misc.trace(@This(), "convert_run_optimize", "{t} card={}", .{ c.typecode, card });
+pub fn convert_run_optimize(r: *Bitmap, c: Container, allocator: mem.Allocator) !Container {
+    trace(@src(), "{t}", .{c.typecode});
     if (c.typecode == .run) {
-        const newc = try r.convert_run_to_efficient_container(c, card, allocator);
-        _ = newc; // autofix
-        // if (newc != c) c.deinit(allocator);
-        // return newc;
-        unreachable;
+        const newc = try r.convert_run_to_efficient_container(c, allocator);
+        if (newc != c) unreachable; // TODO r.deinit_container(allocator, cid);
+        return newc;
     } else if (c.typecode == .array) {
-
-        // // it might need to be converted to a run container.
-        // const c_qua_array = c.const_cast(.array);
-        const n_runs = r.array_number_of_runs(c);
+        // it might need to be converted to a run container.
+        const nruns = r.array_number_of_runs(c);
+        const nblocks = @divExact(mem.alignForward(u32, nruns * @sizeOf(root.Rle16), C.BLOCK_BYTES), C.BLOCK_BYTES);
         const rc: Container = .{
             .typecode = .run,
-            .n_runs = @intCast(n_runs),
-            .n_blocks = undefined,
-            .pool_offset = undefined,
+            .cardinality = @intCast(nruns),
+            .nblocks_minus1 = @intCast(nblocks),
+            .blockoffset = @intCast(r.blocks.items.len),
         };
-        const size_as_run_container = rc.serialized_size_in_bytes(undefined);
-        const size_as_array_container = c.serialized_size_in_bytes(card);
-
-        if (size_as_run_container >= size_as_array_container) {
-            return c.*;
+        const size_as_run_container = rc.serialized_size_in_bytes();
+        const size_as_array_container = c.serialized_size_in_bytes();
+        trace(@src(), "arraysize={} runsize={}", .{ size_as_array_container, size_as_run_container });
+        if (size_as_array_container <= size_as_run_container) {
+            return c;
         }
         unreachable;
         // // else convert array to run container
-        // var answer = try RunContainer.init_with_capacity(allocator, n_runs);
+        // var answer = try RunContainer.init_with_capacity(allocator, nruns);
         // var prev: i32 = -2;
         // var run_start: i32 = -1;
 
@@ -912,9 +774,9 @@ pub fn convert_run_optimize(r: *Bitmap, c: *const Container, card: u32, allocato
         unreachable; // TODO
         // // does bitset need conversion to run?
         // bitset_container_t *c_qua_bitset = CAST_bitset(c);
-        // int32_t n_runs = bitset_container_number_of_runs(c_qua_bitset);
+        // int32_t nruns = bitset_container_number_of_runs(c_qua_bitset);
         // int32_t size_as_run_container =
-        //     run_container_serialized_size_in_bytes(n_runs);
+        //     run_container_serialized_size_in_bytes(nruns);
         // int32_t size_as_bitset_container =
         //     bitset_container_serialized_size_in_bytes();
 
@@ -925,8 +787,8 @@ pub fn convert_run_optimize(r: *Bitmap, c: *const Container, card: u32, allocato
         // }
         // // bitset to runcontainer (ported from Java  RunContainer(
         // // BitmapContainer bc, int nbrRuns))
-        // assert(n_runs > 0);  // no empty bitmaps
-        // run_container_t *answer = run_container_create_given_capacity(n_runs);
+        // assert(nruns > 0);  // no empty bitmaps
+        // run_container_t *answer = run_container_create_given_capacity(nruns);
 
         // int long_ctr = 0;
         // uint64_t cur_word = c_qua_bitset.words[0];
@@ -972,17 +834,15 @@ pub fn convert_run_optimize(r: *Bitmap, c: *const Container, card: u32, allocato
 ///
 /// If a conversion occurs, the caller is responsible to free the original
 /// container and he becomes responsible to free the new one.
-pub fn convert_run_to_efficient_container(r: *Bitmap, c: *const Container, card: u32, allocator: mem.Allocator) !Container {
-    _ = r; // autofix
+pub fn convert_run_to_efficient_container(r: *Bitmap, c: Container, allocator: mem.Allocator) !Container {
     _ = allocator; // autofix
     assert(c.typecode == .run);
-    const size_as_run_container = c.serialized_size_in_bytes(undefined);
-
+    trace(@src(), "{}", .{c.cardinality});
+    const size_as_run_container = c.serialized_size_in_bytes();
     const size_as_bitset_container = @sizeOf(root.Bitset);
-
-    var ac: Container = undefined;
-    ac.typecode = .array;
-    const size_as_array_container = ac.serialized_size_in_bytes(card);
+    const card = c.compute_cardinality(r);
+    var ac: Container = .{ .typecode = .array, .cardinality = card, .nblocks_minus1 = undefined, .blockoffset = undefined };
+    const size_as_array_container = ac.serialized_size_in_bytes();
 
     const min_size_non_run =
         if (size_as_bitset_container < size_as_array_container)
@@ -990,20 +850,20 @@ pub fn convert_run_to_efficient_container(r: *Bitmap, c: *const Container, card:
         else
             size_as_array_container;
     if (size_as_run_container <= min_size_non_run) { // no conversion
-        return c.*;
+        return c;
     }
     if (card <= C.DEFAULT_MAX_SIZE) {
         unreachable; // TODO
         // // to array
         // var answer = try ArrayContainer.init_with_capacity(allocator, card);
         // answer.cardinality = 0;
-        // for (0..c.n_runs) |rlepos| {
+        // for (0..c.cardinality) |rlepos| {
         //     const run_start = c.runs[rlepos].value;
         //     const run_end = run_start + c.runs[rlepos].length;
 
         //     var run_value = run_start;
         //     while (run_value < run_end) : (run_value += 1) {
-        //         answer.array[answer.cardinality] = run_value;
+        //         answer.get_array()[answer.cardinality] = run_value;
         //         answer.cardinality += 1;
         //     }
         // }
@@ -1014,7 +874,7 @@ pub fn convert_run_to_efficient_container(r: *Bitmap, c: *const Container, card:
     // // else to bitset
     // var answer = try BitsetContainer.create(allocator);
 
-    // for (0..c.n_runs) |rlepos| {
+    // for (0..c.cardinality) |rlepos| {
     //     const start = c.runs[rlepos].value;
     //     const end = start + c.runs[rlepos].length;
     //     BitsetContainer.set_range(answer.words, start, end + 1);
@@ -1034,7 +894,7 @@ pub fn convert_run_to_efficient_container(r: *Bitmap, c: *const Container, card:
 /// When setting this flag to false, if any containers are shared, they
 /// are unshared (cloned) immediately.
 pub fn get_copy_on_write(r: *const Bitmap) bool {
-    return r.header.flags & 1 << @intFromEnum(Flag.cow) != 0;
+    return r.get_header().flags & 1 << @intFromEnum(Flag.cow) != 0;
 }
 
 var reason_global: ?[]const u8 = null;
@@ -1061,36 +921,43 @@ var reason_global: ?[]const u8 = null;
 /// - Shared containers are only used when the bitmap is COW
 ///
 /// Note: not thread safe - global
-pub fn internal_validate(r: Bitmap, reason: ?*?[]const u8) bool {
-    const reason1 = reason orelse &reason_global;
-    reason1.* = null;
+pub fn internal_validate(r: *const Bitmap, reason: *?[]const u8) bool {
+    reason.* = null;
 
-    if (@popCount(r.header.flags) > 1) {
-        reason1.* = "invalid flags";
+    if (r.header == Container.uninit) return true;
+
+    if (!r.get_header().internal_validate(reason, r)) {
         return false;
     }
-    if (r.header.container_count == 0) return true;
 
-    const keys = r.header.get_keys();
+    if (@popCount(r.get_header().flags) > 1) {
+        reason.* = "invalid flags";
+        return false;
+    }
+    if (r.get_header().len == 0) return true;
+
+    const keys = r.get_header().slice(.keys, .len);
     var prev_key = keys[0];
     for (keys[1..]) |key| {
         if (key <= prev_key) {
-            reason1.* = "keys not strictly increasing";
+            reason.* = "keys not strictly increasing";
             return false;
         }
         prev_key = key;
     }
 
     const cow = r.get_copy_on_write();
-    for (r.header.get_containers()) |*c| {
+    for (0..r.get_header().len) |ci| {
+        const cid: Container.Id = @enumFromInt(ci);
+        const c = r.get_header().get_container(cid);
         if (c.typecode == .shared and !cow) {
-            reason1.* = "shared container in non-COW bitmap";
+            reason.* = "shared container in non-COW bitmap";
             return false;
         }
-        if (!r.internal_validate_container(c, reason1)) {
+        if (!r.internal_validate_container(cid, reason)) {
             // reason should already be set
-            if (reason1.* == null) {
-                reason1.* = "container failed to validate but no reason given";
+            if (reason.* == null) {
+                reason.* = "container failed to validate but no reason given";
             }
             return false;
         }
@@ -1099,53 +966,87 @@ pub fn internal_validate(r: Bitmap, reason: ?*?[]const u8) bool {
     return true;
 }
 
-pub fn internal_validate_container(r: Bitmap, container: *const Container, reason: *?[]const u8) bool {
-    const containeridx = container - r.header.containers;
+pub fn internal_validate_container(r: *const Bitmap, cid: Container.Id, reason: *?[]const u8) bool {
+    const c = r.get_header().get_container(cid);
 
-    if (r.header.cardinalities[containeridx] == 0) {
+    if (c.cardinality == 0) {
         reason.* = "container is empty";
         return false;
     }
-    // Not using container_unwrap_shared because it asserts if shared containers
-    // are nested
-    if (container.typecode == .shared) {}
-    switch (container.typecode) {
-        .shared => {
-            unreachable; // TODO
-            // const shared_container_t *shared_container =
-            //     const_CAST_shared(container);
-            // if (croaring_refcount_get(&shared_container->counter) == 0) {
-            //     reason.* = "shared container has zero refcount";
-            //     return false;
-            // }
-            // if (shared_container->typecode == shared) {
-            //     reason.* = "shared container is nested";
-            //     return false;
-            // }
-            // if (shared_container->container.is_null()) {
-            //     reason.* = "shared container has NULL container";
-            //     return false;
-            // }
-            // container = shared_container->container;
-            // typecode = shared_container->typecode;
-        },
-        .bitset => unreachable,
-        .array => unreachable,
-        .run => unreachable,
-        // return container.validate(reason),
-        //     bitset =>
-        //         return bitset_container_validate(const_CAST_bitset(container),
-        //                                          reason);
-        // array =>
-        //         return array_container_validate(const_CAST_array(container),
-        //                                         reason);
-        //         run =>
-        //         return run_container_validate(const_CAST_run(container), reason);
-        // _ => { // TODO?
-        //     reason.* = "invalid typecode";
-        //     return false;
-        // },
+    return c.internal_validate(reason, r);
+}
+
+/// grow if necessary to new_capacity.  deinit if 0.  does not modify `r.get_array().len`.
+fn realloc_array(r: *Bitmap, allocator: mem.Allocator, new_capacity: u32) !void {
+    const a = r.get_header();
+    trace(@src(), "array {f}", .{a});
+    if (new_capacity == 0) {
+        r.deinit(allocator);
+        return;
     }
+    if (new_capacity <= a.capacity)
+        return;
+    // const buf_size = Array.buffer_size_from_count(a.magic, new_capacity);
+    const nblocks = header_info(new_capacity);
+    trace(@src(), "buf_size={}", .{nblocks});
+    try r.blocks.resize(allocator, new_capacity);
+    if (true) unreachable; // TODO incorrect ^
+    // const array_buf = if (a.capacity == 0)
+    //     // try allocator.alloc(u8, buf_size)
+    //     try r.blocks.addManyAsSlice(allocator, new_capacity)
+    // else b: {
+    //     break :b r.blocks.items;
+    //     // try allocator.realloc(a.allocated_buffer(), buf_size);
+    // };
+    // errdefer allocator.free(array_buf);
+    var newa: Array = undefined;
+    try newa.init_from_buffer(a, mem.sliceAsBytes(r.blocks.items), new_capacity);
+    trace(@src(), "old array {f}", .{a});
+    // if (a.capacity != 0) a.deinit(allocator);
+    a.* = newa;
+    trace(@src(), "new array {f}", .{a});
+}
+
+pub fn extend_array(r: *Bitmap, allocator: mem.Allocator, k: i32) !void {
+    const a = r.get_header();
+    const desired_len = misc.cast(i32, a.len) + k;
+    // trace(@src(), "desired_len={} len/cap={}/{}", .{ desired_len, a.len, a.capacity });
+    assert(desired_len <= C.MAX_CONTAINERS);
+
+    if (desired_len > a.capacity) {
+        const new_capacity: u32 = @intCast(@min(C.MAX_CONTAINERS, if (a.len < 1024)
+            2 * desired_len
+        else
+            @divFloor(5 * desired_len, 4)));
+        trace(@src(), "old/newcount={}/{}", .{ a.len, new_capacity });
+        try r.realloc_array(allocator, new_capacity);
+    }
+}
+
+/// Shifts rightmost $count containers to the left (distance < 0) or
+/// to the right (distance > 0).
+/// Allocates memory if necessary.
+/// This function doesn't free or create new containers.
+/// Caller is responsible for that.
+pub fn shift_tail(r: *Bitmap, allocator: mem.Allocator, count: u32, distance: i32) !void {
+    trace(@src(), "count={} distance={}", .{ count, distance });
+    if (distance > 0) {
+        try r.extend_array(allocator, distance);
+    }
+
+    if (count == 0) return;
+    const srcpos: i32 = @intCast(r.get_header().len - count);
+    const dstpos = srcpos + distance;
+    const keys = r.get_header().slice(.keys, .len);
+    @memmove(
+        keys[@intCast(dstpos)..][0..count],
+        keys[@intCast(srcpos)..][0..count],
+    );
+    const cs = r.get_header().slice(.containers, .len);
+    @memmove(
+        cs[@intCast(dstpos)..][0..count],
+        cs[@intCast(srcpos)..][0..count],
+    );
 }
 
 fn deserializeTestdataPortable(io: Io, f: Io.File) !Bitmap {
@@ -1171,25 +1072,25 @@ fn validateTestdataFile(rb: Bitmap) !void {
 }
 
 test Bitmap {
-    const io = testing.io;
+    const testio = testing.io;
     { // "without runs"
         const filepath = "testdata/bitmapwithoutruns.bin";
-        const f = try Io.Dir.cwd().openFile(io, filepath, .{});
-        defer f.close(io);
-        var rb = try deserializeTestdataPortable(io, f);
+        const f = try Io.Dir.cwd().openFile(testio, filepath, .{});
+        defer f.close(testio);
+        var rb = try deserializeTestdataPortable(testio, f);
         defer rb.deinit(testing.allocator);
-        try testing.expectEqual(.SERIAL_COOKIE_NO_RUNCONTAINER, rb.header.magic);
-        try testing.expectEqual(8 * 256 + 220, rb.pool.items.len); // 8 bitsets, 220 array blocks
+        try testing.expectEqual(.SERIAL_COOKIE_NO_RUNCONTAINER, rb.get_header().magic);
+        // try testing.expectEqual(8 * 256 + 220 + @as(u32, rb.header.nblocks()), rb.blocks.items.len); // 8 bitsets, 220 array blocks
         try validateTestdataFile(rb);
     }
     { // "with runs"
         const filepath = "testdata/bitmapwithruns.bin";
-        const f = try Io.Dir.cwd().openFile(io, filepath, .{});
-        defer f.close(io);
-        var rb = try deserializeTestdataPortable(io, f);
+        const f = try Io.Dir.cwd().openFile(testio, filepath, .{});
+        defer f.close(testio);
+        var rb = try deserializeTestdataPortable(testio, f);
         defer rb.deinit(testing.allocator);
-        try testing.expectEqual(.SERIAL_COOKIE, rb.header.magic);
-        try testing.expectEqual(5 * 256 + 220 + 3, rb.pool.items.len); // 5 bitsets, 220 array blocks, 3 run blocks
+        try testing.expectEqual(.SERIAL_COOKIE, rb.get_header().magic);
+        // try testing.expectEqual(5 * 256 + 220 + 3 + @as(u32, rb.header.nblocks()), rb.blocks.items.len); // 5 bitsets, 220 array blocks, 3 run blocks
         try validateTestdataFile(rb);
     }
 }
@@ -1202,4 +1103,10 @@ const Io = std.Io;
 const builtin = @import("builtin");
 const C = @import("constants.zig");
 const misc = @import("misc.zig");
+const trace = misc.trace;
 const root = @import("root.zig");
+const Typecode = root.Typecode;
+const Any = root.container.Any;
+const Container = root.container.Container;
+const Block = root.Block;
+const Array = root.Array;

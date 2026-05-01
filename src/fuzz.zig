@@ -19,7 +19,7 @@ const DataProvider = struct {
     // range. If there's no input data left, always returns |min|. |min| must
     // be less than or equal to |max|.
     pub fn ConsumeIntegralInRange(fdp: *DataProvider, T: type, min: T, max: T) T {
-        comptime assert(@typeInfo(T) == .int and @sizeOf(T) <= @sizeOf(u64)); // "Unsupported integral type
+        comptime assert(@typeInfo(T) == .int and @sizeOf(T) <= @sizeOf(u64)); // "Unsupported int type
 
         // Use the biggest type possible to hold the range and the result.
         const range = @as(u64, max) - min;
@@ -166,7 +166,7 @@ fn bitmap32(io: Io, data: []const u8) u8 {
             const i: u32 = @intCast(ii);
             if (!bitmap.contains(i)) {
                 cardinality += 1;
-                _ = bitmap.add(gpa, i) catch return 0;
+                bitmap.add(gpa, i) catch return 0;
             }
         }
         if (cardinality != bitmap.get_cardinality()) {

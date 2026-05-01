@@ -2,6 +2,7 @@ pub const PositionalArgs = struct {
     file: []const u8,
     pattern: []const u8,
 
+    const positionals_fields = std.meta.fieldNames(PositionalArgs);
     // pub const Mask = std.meta.Int(.unsigned, positionals_fields.len);
     // const Mask_all_ones = (1 << (positionals_fields.len)) - 1;
     pub const Error = error{MissingArg};
@@ -33,8 +34,6 @@ pub const PositionalArgs = struct {
         return ret;
     }
 };
-
-const positionals_fields = std.meta.fieldNames(PositionalArgs);
 
 pub fn main() !void {
     var argiter = std.process.args();
